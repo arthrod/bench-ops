@@ -60,12 +60,12 @@ def make_index(**over: object) -> CasesIndex:
         "repo": "jandira-tech/neurotic_docx_bench",
         "assets_base": BASE,
         "engines": [
-            {"key": "reference", "label": "Word"},
             {"key": "jubarte", "label": "jubarte"},
             {"key": "minipdf", "label": "MiniPdf (Rust)"},
+            {"key": "reference", "label": "Word"},
         ],
         "groups": [
-            {"kind": "conversion", "group": "v1/clean", "count": 1, "path": "cases/conversion/v1_clean.json"}
+            {"kind": "conversion", "group": "v1/clean", "count": 1, "path": "cases/conversion/v1--clean.json"}
         ],
     }
     payload.update(over)
@@ -87,6 +87,8 @@ def make_speed() -> Speed:
             "title": "Speed on 10,000 varied inputs",
             "intro": "One call per pair, engines run one after another on the same machine.",
             "tasks": [
+                {"id": "pdf", "title": "DOCX to PDF", "description": "Not measured yet.",
+                 "available": False},
                 {
                     "id": "redlines",
                     "title": "Redline comparison",
@@ -119,8 +121,6 @@ def make_speed() -> Speed:
                     ],
                     "notes": [{"heading": "Machine", "paragraphs": ["Apple M4 Pro"], "bullets": []}],
                 },
-                {"id": "pdf", "title": "DOCX to PDF", "description": "Not measured yet.",
-                 "available": False},
             ],
         }
     )
@@ -193,7 +193,7 @@ def test_null_page_slots_are_preserved() -> None:
     case = make_case(
         pages={"reference": ["~/r/1.webp"], "minipdf": [None]},
         page_counts={"reference": 1, "minipdf": 0},
-        versions={"reference": "Word", "minipdf": "MiniPdf 0.3"},
+        versions={"reference": "Word", "minipdf": "MiniPdf 0.3", "jubarte": "jubarte 0.14.0"},
     )
     text = dumps_compact(make_shard([case]))
     assert json.loads(text)["cases"][0]["pages"]["minipdf"] == [None]
@@ -203,7 +203,7 @@ def test_null_page_slots_are_preserved() -> None:
 def test_max_break_drift_is_signed() -> None:
     for drift in (-11916, 0, 9310):
         assert MetricDiagnostics(ref_pages=1, pages=1, scored_pages=1, max_break_drift=drift).max_break_drift == drift
-    for bad in (-1, -1, -1):
+    for bad in (-1, -2, -3):
         with pytest.raises(ValidationError):
             MetricDiagnostics(ref_pages=bad, pages=1, scored_pages=1, max_break_drift=0)
 
@@ -265,7 +265,10 @@ def test_validate_shard_checks_engine_keys() -> None:
         page_counts={"reference": 1, "office2pdf": 1},
         scores={"office2pdf": {"pixel": 50.0}},
         times={"office2pdf": 1.0},
-        versions={"reference": "Word", "office2pdf": "0.9"},
+        versions={"reference": "Word", "office2pdf": "0.9",
+                  "old-lane": "0.1", "future-lane": "0.2"},
+        pdfs={},
+        metric_diagnostics={},
         dropped=["old-lane"],
         unavailable=["future-lane"],
     )
@@ -285,7 +288,7 @@ def test_index_rejects_duplicate_engines_and_groups() -> None:
     with pytest.raises(ValidationError):
         make_index(engines=[{"key": "jubarte", "label": "a"}, {"key": "jubarte", "label": "b"}])
     dup = [{"kind": "conversion", "group": "v1/clean", "count": 1,
-            "path": "cases/conversion/v1_clean.json"}] * 2
+            "path": "cases/conversion/v1--clean.json"}] * 2
     with pytest.raises(ValidationError):
         make_index(groups=dup)
 
@@ -299,6 +302,9 @@ def test_failed_engine_keeps_its_scores_entry() -> None:
         page_counts={"reference": 1, "minipdf": 0},
         versions={"reference": "Word 16.115", "minipdf": "MiniPdf 0.3"},
         scores={"minipdf": {"pixel": 0}},
+        times={},
+        pdfs={},
+        metric_diagnostics={},
         errors={"minipdf": "convert crashed"},
     )
     assert failed.scores["minipdf"] == {"pixel": 0}
@@ -308,6 +314,9 @@ def test_failed_engine_keeps_its_scores_entry() -> None:
             page_counts={"reference": 1, "minipdf": 0},
             versions={"reference": "Word 16.115", "minipdf": "MiniPdf 0.3"},
             scores={},
+            times={},
+            pdfs={},
+            metric_diagnostics={},
             errors={"minipdf": "convert crashed"},
         )
 
@@ -372,14 +381,20 @@ def test_shard_holds_one_kind_and_group() -> None:
         make_shard([make_case(), make_case()])  # duplicate case id within the shard
 
 
-# ---- speed notes are plain text ------------------------------------------------------------
+# ---- speed notes are plain text with backtick code spans (review M2) ------------------------
 
 
-def test_speed_notes_reject_markup() -> None:
-    SpeedNote(heading="Machine", paragraphs=["Apple M4 Pro"], bullets=["128 GB RAM"])
-    for bad in ({"heading": "a <b>x</b>"}, {"paragraphs": ["p < 10 ms"]}, {"bullets": ["<script>"]}):
-        with pytest.raises(ValidationError):
-            SpeedNote.model_validate({"heading": "h", "paragraphs": [], "bullets": [], **bad})
+def test_speed_notes_accept_backtick_code_spans() -> None:
+    note = SpeedNote.model_validate(
+        {
+            "heading": "Run of 2026-09-29 (00:45 to 09:23 EDT)",
+            "paragraphs": [],
+            "bullets": ["all `word_compare` rows kept `ok: false`, `ms: 120000`"],
+        }
+    )
+    assert "`word_compare`" in note.bullets[0]
+    # the old "<" ban is gone: the viewer escapes every string, no field rejects markup
+    SpeedNote.model_validate({"heading": "h", "paragraphs": ["p < 10 ms"], "bullets": []})
 
 
 # ---- dumps_compact -------------------------------------------------------------------------
@@ -401,7 +416,7 @@ def test_dumps_compact_drops_only_optional_metadata() -> None:
         shown=None,
         pages={"reference": ["~/r/1.webp"], "minipdf": [None]},
         page_counts={"reference": 1, "minipdf": 0},
-        versions={"reference": "Word", "minipdf": "MiniPdf 0.3"},
+        versions={"reference": "Word", "minipdf": "MiniPdf 0.3", "jubarte": "jubarte 0.14.0"},
         errors={"minipdf": "convert crashed"},
         scores={"jubarte": {"pixel": 98.2, "jaccard": None, "ssim": 99.1, "text_boundary": None},
                 "minipdf": {"pixel": 0}},
@@ -415,7 +430,7 @@ def test_dumps_compact_drops_only_optional_metadata() -> None:
 
 
 def test_dumps_compact_speed_optionals() -> None:
-    task = json.loads(dumps_compact(make_speed()))["tasks"][1]
+    task = json.loads(dumps_compact(make_speed()))["tasks"][0]
     assert task["available"] is False
     for gone in ("planned", "timeout_ms", "quartile_cuts_bytes", "coverage", "tables", "notes"):
         assert gone not in task or task[gone] == []
