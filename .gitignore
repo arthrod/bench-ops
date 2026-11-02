@@ -1,0 +1,10 @@
+# linked repos live beside this file but are not part of it
+/ndb/
+/editors_trial/
+/benchmarks-law/
+/jubarte-app/
+/.work/
+/.logs/
+/.venv/
+__pycache__/
+*.pyc
