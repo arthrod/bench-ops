@@ -2,7 +2,13 @@
 
 Issue: arthrod/jubarte-app#162. Depends on Plan 2 (a published `ndb-v*` tag with `scores.json`) and Plan 3 (bench-viewer). Tracking: arthrod/bench-ops#8.
 
-## What the survey found (changes the plan 1 row)
+## Revision 2 (Arthur, 2026-11-02): one source of truth
+
+The engine's `release_info/` files are written by ndb (`neurotic_docx_bench.jubarte_release_info … --engine-dir`), so ndb is the only producer. ndb keeps a copy of the six files in `results/release_<v>_evidence/release_info/` and `scores.json` carries the sample tables, headlines, home groups, method and the per-table states. jubarte reads only the ndb release: `sync-bench.ts` has one mode (`--scores`), the release_info mode and its proof move to ndb (`bench report` refuses a scores.json whose sample tables differ from the newest evidence). `fixtures.lock` is folded into `bench.lock`: the Cases fixtures come from the ndb release bundle (`cases.json` plus the fixture files it lists). `bench deploy jubarte` is restored (the single command Arthur asked for): `bench fetch --check`, then `scripts/release.sh deploy`.
+
+The sections below are revision 1; where they disagree with this paragraph, this paragraph wins.
+
+## What the survey found (revision 1)
 
 - jubarte.pro's numbers have **two** producers, not one. The sample tables (`conversion-sample`, `redlines-sample`) and the headlines come from the **engine** release (`jubarte-redlines/release_info/`, `sync-bench.ts`, proved by `check-bench.ts compareRelease`). Only the full-corpus tables, the states and `bench.version/generated` come from ndb (today parsed out of `RESULTS.md`). ndb's `scores.json` therefore replaces the `RESULTS.md` half only; the `release_info` half stays.
 - `fixtures.lock` is **not** an ndb release pin. It pins the dataset revision of the Cases fixtures jubarte-site stages and uploads itself (`site_fixtures.py stage/upload`). Folding it into `bench.lock` would mix a consumer's own artifact with a producer's release. It stays as it is.

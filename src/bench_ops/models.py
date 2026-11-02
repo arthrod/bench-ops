@@ -129,6 +129,7 @@ class StateCell(Strict):
     name: str
     n: str
     rows: list[StateRow]
+    table: str | None = None  # id of the Table these states break down
 
 
 class HomeBar(Strict):

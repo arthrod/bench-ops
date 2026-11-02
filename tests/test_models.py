@@ -108,3 +108,12 @@ def test_dumps_is_canonical() -> None:
     assert text == dumps(Manifest.model_validate_json(text))
     keys = list(json.loads(text))
     assert keys == sorted(keys)
+
+
+def test_state_cell_names_its_table() -> None:
+    from bench_ops.models import StateCell, StateRow
+
+    c = StateCell(name="clean", n="150", rows=[StateRow(tool="jubarte", median=80.0, ours=True)],
+                  table="conversion-sample")
+    assert c.table == "conversion-sample"
+    assert StateCell(name="clean", n="1", rows=[]).table is None

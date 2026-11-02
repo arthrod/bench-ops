@@ -2,7 +2,13 @@
 
 Issue: jandira-tech/neurotic_docx_bench#115. Tracking: arthrod/bench-ops#8.
 
-## What the survey found (changes the scope)
+## Revision 2 (Arthur, 2026-11-02): every viewer renders from the release
+
+The gh-pages viewer and benchmarks.law's copy render from per-case data (`data.json`, `redlines/cases.json`), speed tables and summary rows that `scores.json` did not carry. That is a gap in the contract, not a reason to keep copying viewers. The ndb release bundle carries `scores.json`, `cases.json` (per case: group, case id, page URLs per engine, per-metric scores, versions) and `speed.json`; bench-ops gets `Cases` and `Speed` models mirroring today's `data.json`/`cases.json`/speed page data. bench-viewer gains `renderCaseStrip`, the case browser and the speed tables (ported from the gh-pages JS), and `build:pages` builds the whole gh-pages site from the bundle (arthur-law skin). benchmarks.law renders the same pages from the same bundle; its copied viewer is deleted (Plan 5). States carry `table` (contract change, `StateCell.table`). This lands as Plan 3b after 3a (the leaderboard renderers, done).
+
+The sections below are revision 1; where they disagree with this paragraph, this paragraph wins.
+
+## What the survey found (revision 1)
 
 - jubarte.pro already renders the leaderboard from data shaped exactly like `Scores` (`jubarte-site/site/pages/benchmark.ts` `row()`, headlines, states; `pages/home.ts` bar groups). This is the markup bench-viewer must reproduce **byte for byte**, so Plan 4 is a swap with no visual change.
 - The gh-pages site (`ndb/site/index.html`, 18 MB) is **not** a leaderboard. It is a per-case browser with all case data inlined; its "scores table" is one row per case, built from case data that `scores.json` does not carry. The plan 1 acceptance "snapshots equal the gh-pages table markup" cannot hold. bench-viewer reproduces the jubarte markup only; the case browser stays as it is.
