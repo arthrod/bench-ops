@@ -84,3 +84,17 @@ def test_diverged_main_is_reported_not_raised(tmp_path: Path) -> None:
         )
     subprocess.run(["git", "push", "-q", "origin", "main"], cwd=other, check=True)
     assert clone_or_pull(str(origin), dest, "main") == "fetched (diverged)"
+
+
+def test_git_ignores_hook_environment(tmp_path: Path, monkeypatch) -> None:
+    """Inside a git hook GIT_DIR/GIT_INDEX_FILE point at the hooked repo, not the one we ask about."""
+    origin = make_origin(tmp_path)
+    dest = tmp_path / "dest"
+    clone_or_pull(str(origin), dest, "main")
+    (dest / "b.txt").write_text("b\n")
+    other = tmp_path / "other"
+    clone_or_pull(str(origin), other, "main")
+    monkeypatch.setenv("GIT_DIR", str(other / ".git"))
+    monkeypatch.setenv("GIT_INDEX_FILE", str(other / ".git" / "index"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(other))
+    assert status(dest).dirty == 1

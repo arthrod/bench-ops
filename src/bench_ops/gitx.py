@@ -2,14 +2,23 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+# Set by git for hooks; inherited, they would redirect every call to the hooked repository.
+HOOK_ENV = ("GIT_DIR", "GIT_INDEX_FILE", "GIT_WORK_TREE", "GIT_PREFIX", "GIT_COMMON_DIR")
+
+
+def clean_env() -> dict[str, str]:
+    return {k: v for k, v in os.environ.items() if k not in HOOK_ENV}
+
 
 def git(repo: Path, *args: str) -> str:
     out = subprocess.run(
-        ["git", "-C", str(repo), *args], check=True, capture_output=True, text=True
+        ["git", "-C", str(repo), *args],
+        check=True, capture_output=True, text=True, env=clean_env(),
     )
     return out.stdout
 
@@ -33,7 +42,9 @@ def clone_or_pull(url: str, dest: Path, branch: str) -> str:
             return "fetched (diverged)"
         return "pulled"
     dest.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["git", "clone", "-q", "--branch", branch, url, str(dest)], check=True)
+    subprocess.run(
+        ["git", "clone", "-q", "--branch", branch, url, str(dest)], check=True, env=clean_env()
+    )
     return "cloned"
 
 
