@@ -11,7 +11,12 @@ path = "/Users/arthrod/temp/T/neurotic_docx_bench"
 hf_repo = "arthrod/neurotic_docx_bench"
 private = false  # the public record dataset (H2: visibility is checked, never assumed)
 before = ["uv run bench report --check", "uv run bench results upload"]
-files = ["results/scores.json"]
+files = [  # plan 3b: cases + speed beside the scores (results/release/ is git-ignored, written by `bench report`)
+  "results/scores.json",
+  "results/release/cases/index.json",
+  "results/release/cases/*/*.json",
+  "results/release/speed.json",
+]
 
 [[repos]]
 name = "editors_trial"

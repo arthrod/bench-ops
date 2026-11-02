@@ -110,7 +110,12 @@ def test_workspace_repos_toml_names_the_release_and_deploy_commands() -> None:
     assert ndb.release is not None
     assert ndb.release.hf_repo == "arthrod/neurotic_docx_bench"
     assert ndb.release.before == ["uv run bench report --check", "uv run bench results upload"]
-    assert ndb.release.files == ["results/scores.json"]
+    assert ndb.release.files == [
+        "results/scores.json",
+        "results/release/cases/index.json",
+        "results/release/cases/*/*.json",
+        "results/release/speed.json",
+    ]
     assert cfg.by_name("jubarte-app").deploy == (
         "cd jubarte-site && scripts/release.sh deploy {version}"
     )
