@@ -22,6 +22,26 @@ class HubApi(Protocol):
     def download(self, repo: str, revision: str, path: str) -> Path: ...
 
 
+class WriteApi(HubApi, Protocol):
+    """The write side `bench publish` needs (plan 2, C3): plus the two lookups resume uses."""
+
+    def exists(self, repo: str, path: str, revision: str = "main") -> bool: ...
+
+    def commit(self, repo: str, files: dict[str, Path], message: str) -> str:
+        """Returns the new revision: CommitInfo.oid, never str(info) (that is the URL, D10)."""
+        ...
+
+    def revision_of(self, repo: str, path: str, revision: str = "main") -> str | None:
+        """The oid of the last commit that wrote `path`; None when the path is not there."""
+        ...
+
+    def tag_revision(self, repo: str, tag: str) -> str | None:
+        """The revision a Hub tag points at; None when the tag does not exist."""
+        ...
+
+    def create_tag(self, repo: str, tag: str, revision: str) -> None: ...
+
+
 class HfHub:
     """The real HubApi over huggingface_hub (dataset repos only)."""
 
@@ -49,6 +69,44 @@ class HfHub:
         from huggingface_hub import hf_hub_download
 
         return Path(hf_hub_download(repo, path, revision=revision, repo_type="dataset"))
+
+    # ---- the write side, used by `bench publish` (plan 2) ---------------------------------
+
+    def exists(self, repo: str, path: str, revision: str = "main") -> bool:
+        return self.api.file_exists(repo, path, revision=revision, repo_type="dataset")
+
+    def commit(self, repo: str, files: dict[str, Path], message: str) -> str:
+        """One commit adding `files` (path in repo -> local path); returns CommitInfo.oid (D10)."""
+        from huggingface_hub import CommitOperationAdd
+
+        operations = [
+            CommitOperationAdd(path_in_repo=path, path_or_fileobj=local)
+            for path, local in files.items()
+        ]
+        info = self.api.create_commit(
+            repo, operations, commit_message=message, repo_type="dataset"
+        )
+        return info.oid  # str(info) is the commit URL, not the revision
+
+    def revision_of(self, repo: str, path: str, revision: str = "main") -> str | None:
+        from huggingface_hub.hf_api import RepoFile
+
+        infos = self.api.get_paths_info(
+            repo, [path], expand=True, revision=revision, repo_type="dataset"
+        )
+        for info in infos:
+            if isinstance(info, RepoFile) and info.path == path and info.last_commit:
+                return info.last_commit.commit_id
+        return None
+
+    def tag_revision(self, repo: str, tag: str) -> str | None:
+        for ref in self.api.list_repo_refs(repo, repo_type="dataset").tags:
+            if ref.name == tag:
+                return ref.target_commit
+        return None
+
+    def create_tag(self, repo: str, tag: str, revision: str) -> None:
+        self.api.create_tag(repo, tag=tag, revision=revision, repo_type="dataset")
 
 
 @dataclass

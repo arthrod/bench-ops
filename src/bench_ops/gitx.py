@@ -8,6 +8,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 # Set by git for hooks; inherited, they would redirect every call to the hooked repository.
+# GIT_INDEX_FILE is the exception: during a path-limited commit's pre-commit hook it names
+# the temporary index git is about to commit — the ledger hook must read exactly that one
+# (C2), so hook calls keep it (hook_env); every other call strips it (clean_env).
+REDIRECT_ENV = ("GIT_DIR", "GIT_WORK_TREE", "GIT_PREFIX", "GIT_COMMON_DIR")
 HOOK_ENV = ("GIT_DIR", "GIT_INDEX_FILE", "GIT_WORK_TREE", "GIT_PREFIX", "GIT_COMMON_DIR")
 
 
@@ -15,10 +19,16 @@ def clean_env() -> dict[str, str]:
     return {k: v for k, v in os.environ.items() if k not in HOOK_ENV}
 
 
-def git(repo: Path, *args: str) -> str:
+def hook_env() -> dict[str, str]:
+    """clean_env, but GIT_INDEX_FILE survives: `git show :<path>` inside a pre-commit hook
+    must read the index that commit will commit, not .git/index (C2)."""
+    return {k: v for k, v in os.environ.items() if k not in REDIRECT_ENV}
+
+
+def git(repo: Path, *args: str, hook: bool = False) -> str:
     out = subprocess.run(
         ["git", "-C", str(repo), *args],
-        check=True, capture_output=True, text=True, env=clean_env(),
+        check=True, capture_output=True, text=True, env=hook_env() if hook else clean_env(),
     )
     return out.stdout
 

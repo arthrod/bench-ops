@@ -5,18 +5,24 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 
 import typer
+from pydantic import ValidationError
 from rich.console import Console
 from rich.table import Table as RichTable
 
 from bench_ops.config import Config, load_config
+from bench_ops.gc import VerifiedManifest, fetch_verified, tracked_in, verdicts
 from bench_ops.gitx import clone_or_pull, git, origin_url
 from bench_ops.hf import HfHub, Witness, sha256_of, verify_manifest
 from bench_ops.hooks import secrets_command, size_guard
-from bench_ops.models import LedgerEntry, Manifest
+from bench_ops.ledger import check_ledger
+from bench_ops.models import LedgerEntry, Lock, Manifest, dumps
+from bench_ops.publish import PublishError, run_script
+from bench_ops.publish import publish as publish_release
 from bench_ops.status import latest_tags, report
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
@@ -115,21 +121,35 @@ def status(
     for col in ("repo", "role", "branch", "dirty", "stray worktrees", "release", "witness"):
         table.add_column(col, overflow="fold")
     stale = False
+    broken = False
     for r in repos:
         rep = report(r, latest, witness)
         stale |= rep.stale
+        broken |= rep.broken
+        cell = f"BROKEN: {rep.witness}" if rep.broken else (rep.witness or "-")
         table.add_row(rep.name, rep.role, rep.branch, str(rep.dirty),
-                      "\n".join(rep.stray_worktrees) or "-", rep.release, rep.witness or "-")
+                      "\n".join(rep.stray_worktrees) or "-", rep.release, cell)
     console.print(table)
-    if fail_on_stale and stale:
-        if os.environ.get("BENCH_ALLOW_STALE") == "1":
-            console.print("[yellow]consumer lock is behind; allowed by BENCH_ALLOW_STALE=1[/]")
-            return
-        console.print(
-            "[red]a consumer lock is behind its producer; bump bench.lock "
-            "or commit with BENCH_ALLOW_STALE=1[/]"
-        )
-        raise typer.Exit(1)
+    if fail_on_stale:
+        failed = False  # both messages, then one exit (N7): broken names the record,
+        # stale names the consumer — neither may hide the other
+        if broken:
+            console.print(
+                "[red]BROKEN: a producer's release is not intact on Hugging Face; "
+                "repair the record before relying on it or deleting anything (gc refuses)[/]"
+            )
+            failed = True
+        if stale:
+            if os.environ.get("BENCH_ALLOW_STALE") == "1":
+                console.print("[yellow]consumer lock is behind; allowed by BENCH_ALLOW_STALE=1[/]")
+            else:
+                console.print(
+                    "[red]a consumer lock is behind its producer; bump bench.lock "
+                    "or commit with BENCH_ALLOW_STALE=1[/]"
+                )
+                failed = True
+        if failed:
+            raise typer.Exit(1)
 
 
 def _size_at_head(rel: str) -> int | None:
@@ -145,6 +165,166 @@ def _size_at_head(rel: str) -> int | None:
         return size
     except (subprocess.CalledProcessError, ValueError):
         return None
+
+
+@app.command("publish")
+def publish_cmd(
+    producer: Annotated[str, typer.Argument(help="Producer name in repos.toml.")],
+    tag: Annotated[str, typer.Argument(help="Release tag, e.g. ndb-v0.0.1.")],
+    dry_run: Annotated[
+        bool, typer.Option(help="Local checks and staging only: no hub calls, no writes.")
+    ] = False,
+) -> None:
+    """Upload a producer's release to Hugging Face, verify it, then record it (plan 2).
+
+    Runs the producer's own `before` scripts (its [repos.release], rev 3) in its checkout
+    first — pages current, stores uploaded — stopping at the first failure; nothing here
+    repeats what they already do. Resumable and idempotent (C3): rerunning after a failure
+    adopts what is already on the Hub and creates only the missing records; every step
+    prints `did` or `done`. Never pushes git: the ledger commit and the tag stay local
+    until the printed push command is run by hand.
+    """
+    cfg = _config()
+    try:
+        repo = cfg.by_name(producer)
+    except KeyError:
+        known = ", ".join(r.name for r in cfg.repos)
+        console.print(f"[red]unknown repo {producer!r}; known: {known}[/]")
+        raise typer.Exit(1) from None
+    try:
+        m = publish_release(repo, tag, HfHub(), now=datetime.now(UTC), dry_run=dry_run)
+    except PublishError as e:
+        console.print(f"[red]{e}[/]")
+        raise typer.Exit(1) from None
+    except Exception as e:  # noqa: BLE001 -- a failed publish is a message, never a traceback (M6)
+        console.print(f"[red]{type(e).__name__}: {e}[/]", markup=False, highlight=False)
+        raise typer.Exit(1) from None
+    console.print(dumps(m), markup=False, highlight=False)
+    if not dry_run:
+        console.print(
+            f"push with: git -C {repo.local_path} push origin {repo.branch} && "
+            f"git -C {repo.local_path} push origin {tag}"
+        )
+
+
+@app.command("deploy")
+def deploy_cmd(
+    repo_name: Annotated[str, typer.Argument(help="Consumer name in repos.toml.")],
+    yes: Annotated[
+        bool, typer.Option(help="Actually run the deploy; without it bench only prints it.")
+    ] = False,
+) -> None:
+    """Run a consumer's deploy command with the version its bench.lock pins (plan 2 rev 3).
+
+    Consumer only: producers release with `bench publish`. Checks the lock first (`bench fetch
+    --check` verification is pending Plan 4), then substitutes {version} from the lock's tag of
+    its first producer. Deploys are outward-facing: without --yes the command is printed, not
+    run.
+    """
+    cfg = _config()
+    try:
+        repo = cfg.by_name(repo_name)
+    except KeyError:
+        known = ", ".join(r.name for r in cfg.repos)
+        console.print(f"[red]unknown repo {repo_name!r}; known: {known}[/]")
+        raise typer.Exit(1) from None
+    if repo.role != "consumer":
+        console.print(
+            f"[red]{repo.name} is a {repo.role}; bench deploy runs a consumer's site, "
+            "a producer releases with bench publish[/]"
+        )
+        raise typer.Exit(1) from None
+
+    lock_path = repo.local_path / "bench.lock"
+    if not lock_path.exists():
+        console.print(
+            f"[red]no bench.lock at {lock_path}; release against a producer first[/]"
+        )
+        raise typer.Exit(1) from None
+    console.print(
+        "[yellow]fetch verification is pending Plan 4; only checked that bench.lock exists[/]"
+    )
+    if repo.deploy is None:
+        console.print(f"[red]{repo.name} has no deploy command in repos.toml[/]")
+        raise typer.Exit(1) from None
+
+    command = repo.deploy
+    if "{version}" in command:
+        lock = Lock.parse(lock_path.read_text())
+        if not lock.tags:
+            console.print(
+                f"[red]{lock_path} pins no <producer>=<tag>; cannot substitute {{version}}[/]"
+            )
+            raise typer.Exit(1) from None
+        producer = next(iter(lock.tags))  # the lock's first producer, in file order
+        command = command.replace("{version}", lock.tags[producer])
+
+    if not yes:
+        console.print("[yellow]dry (no --yes): printing the deploy command, not running it[/]")
+        console.print(command, markup=False, highlight=False)
+        return
+    console.print(f"deploying {repo.name}:")
+    console.print(command, markup=False, highlight=False)
+    code = run_script(command, repo.local_path)
+    if code != 0:
+        console.print(f"[red]deploy exited {code}[/]")
+        raise typer.Exit(code)
+
+
+@app.command("gc")
+def gc_cmd(
+    paths: Annotated[list[Path], typer.Argument(help="Local files to consider deleting.")],
+    yes: Annotated[
+        bool, typer.Option(help="Actually delete; without it gc only reports.")
+    ] = False,
+) -> None:
+    """Delete local files whose bytes the Hub records in a verified release manifest (plan 2).
+
+    The Hub is the only authority: every ledger line is verified against it, a served file is
+    never deleted, and nothing under .git/ is touched.
+    """
+    cfg = _config()
+    hub = HfHub()
+    roots = [r.local_path for r in cfg.repos]  # candidates must live in a linked repo (M2)
+    tracked = tracked_in(roots)  # and never be a file git tracks (M3)
+    verified: list[VerifiedManifest] = []
+    unverified: set[str] = set()  # fail closed: these shas are never deletable
+    for repo in cfg.by_role("producer"):
+        ledger = repo.local_path / "release" / "index.jsonl"
+        if not ledger.exists():
+            continue
+        lines = [ln for ln in ledger.read_text().splitlines() if ln.strip()]
+        for i, line in enumerate(lines, 1):
+            try:
+                entry = LedgerEntry.from_line(line)
+            except ValidationError:
+                console.print(f"[red]{repo.name}: ledger line {i} is not a ledger entry[/]")
+                raise typer.Exit(1) from None
+            vm = fetch_verified(entry, hub)
+            if vm is not None:
+                verified.append(vm)
+            else:
+                local = repo.local_path / "release" / entry.tag / "manifest.json"
+                if local.exists():  # untrusted bytes, but its shas must block deletes
+                    try:
+                        unverified.update(
+                            f.sha256
+                            for f in Manifest.model_validate_json(local.read_text()).files
+                        )
+                    except ValidationError:
+                        pass
+    targets = [p if p.is_absolute() else Path.cwd() / p for p in paths]
+    for v in verdicts(targets, verified, unverified, roots=roots, tracked=tracked):
+        if yes and v.deletable:
+            if not v.current():  # changed between hashing and this unlink (M1)
+                console.print(f"[yellow]keep[/] {v.path}  ·  changed since hashing; not deleted")
+                continue
+            v.path.unlink()
+            console.print(f"[red]deleted[/] {v.path}  ·  {v.reason}")
+        else:
+            style = "green" if v.deletable else "yellow"
+            word = "deletable" if v.deletable else "keep"
+            console.print(f"[{style}]{word}[/] {v.path}  ·  {v.reason}")
 
 
 StagedFiles = Annotated[list[Path] | None, typer.Argument(help="Staged files (from lefthook).")]
@@ -175,3 +355,40 @@ def hook_secrets(files: StagedFiles = None) -> None:
     rc = subprocess.run(argv, check=False).returncode
     if rc:
         raise typer.Exit(rc)
+
+
+LEDGER = "release/index.jsonl"
+
+
+def _git_text(repo: Path, *args: str, hook: bool = False) -> str | None:
+    try:
+        return git(repo, *args, hook=hook)
+    except subprocess.CalledProcessError:
+        return None
+
+
+@hook_app.command("ledger")
+def hook_ledger() -> None:
+    """Refuse anything but an append to release/index.jsonl (D7/D14, C1/C2).
+
+    Runs on every commit (lefthook must not glob-gate it: staged deletions and renames are
+    exactly what `git diff --cached --name-status -M` catches). The staged blob is read
+    from the index git will commit — GIT_INDEX_FILE is kept, so for a path-limited commit
+    (`git commit -- release/index.jsonl`) the bytes validated are the bytes committed —
+    and compared with HEAD's.
+    """
+    cwd = Path.cwd()
+    staged = _git_text(cwd, "show", f":{LEDGER}", hook=True)
+    if staged is None:  # not in the index: a deletion/rename, or nothing staged
+        diff = _git_text(cwd, "diff", "--cached", "--name-status", "-M", "--", LEDGER,
+                         hook=True) or ""
+        if any(ln.split("\t")[0].startswith(("D", "R")) for ln in diff.splitlines()):
+            console.print(f"[red]{LEDGER} may only grow: staged deletions and renames are refused[/]")
+            raise typer.Exit(1)
+        return
+    problems = check_ledger(_git_text(cwd, "show", f"HEAD:{LEDGER}", hook=True), staged)
+    for p in problems:
+        console.print(f"[red]{p}[/]")
+    if problems:
+        console.print(f"[red]{LEDGER} is append-only (bench-ops docs/CONTRACT.md)[/]")
+        raise typer.Exit(1)

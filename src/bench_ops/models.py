@@ -6,7 +6,7 @@ import json
 from datetime import datetime
 from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError
 
 Sha256 = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
 GitSha = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{40}$")]
@@ -62,8 +62,26 @@ class LedgerEntry(Strict):
 
     @classmethod
     def last(cls, text: str) -> LedgerEntry | None:
-        lines = [ln for ln in text.splitlines() if ln.strip()]
-        return cls.from_line(lines[-1]) if lines else None
+        """The newest parsable entry. A torn (unparsable) final line is tolerated (M4): the
+        writer may have died mid-append, and `bench status` must report the record, not
+        crash — `bad_line` says whether that happened."""
+        for line in reversed([ln for ln in text.splitlines() if ln.strip()]):
+            try:
+                return cls.from_line(line)
+            except ValidationError:
+                continue
+        return None
+
+    @classmethod
+    def bad_line(cls, text: str) -> int | None:
+        """1-based number of the first line that is not a ledger entry (blank lines don't
+        count); None when every line parses. A torn append leaves exactly one, at the end."""
+        for i, line in enumerate(ln for ln in text.splitlines() if ln.strip()):
+            try:
+                cls.from_line(line)
+            except ValidationError:
+                return i
+        return None
 
 
 class Lock(BaseModel):
