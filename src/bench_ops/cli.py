@@ -35,12 +35,22 @@ def _config() -> Config:
         raise typer.Exit(2) from None
 
 
+INACTIVE = "HOOKS NOT ACTIVE"
+
+
 def _install_hooks(repo: Path) -> str:
     if os.environ.get("BENCH_NO_LEFTHOOK") == "1" or not (repo / "lefthook.yml").exists():
         return "no lefthook.yml"
     if shutil.which("lefthook") is None:
         return "lefthook missing (brew install lefthook)"
     subprocess.run(["lefthook", "install"], cwd=repo, check=True, capture_output=True)
+    # lefthook "continues anyway" when it can't fetch a remote config and has no cached copy,
+    # leaving every shared job out. Check the merged config really has them.
+    dump = subprocess.run(["lefthook", "dump"], cwd=repo, check=False, capture_output=True,
+                          text=True).stdout
+    if "size guard" not in dump:
+        return (f"{INACTIVE}: shared config not fetched; rerun "
+                "`lefthook install` online")
     return "hooks installed"
 
 
@@ -60,10 +70,15 @@ def sync(
             known = ", ".join(r.name for r in cfg.repos)
             console.print(f"[red]unknown repo {only!r}; known: {known}[/]")
             raise typer.Exit(1) from None
+    inactive = False
     for r in repos:
         action = clone_or_pull(r.url, r.local_path, r.branch)
         hooks = _install_hooks(r.local_path)
-        console.print(f"{r.name:<16} {action:<20} {r.local_path}  ·  {hooks}")
+        inactive |= hooks.startswith(INACTIVE)
+        style = "red" if hooks.startswith(INACTIVE) else "default"
+        console.print(f"{r.name:<16} {action:<20} {r.local_path}  ·  [{style}]{hooks}[/]")
+    if inactive:
+        raise typer.Exit(1)
 
 
 def _witness_via_hf(entry: LedgerEntry) -> Witness:
