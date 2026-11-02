@@ -65,13 +65,13 @@ def status(repo: Path) -> GitStatus:
 
 
 def worktrees(repo: Path) -> list[Path]:
-    """Worktrees other than the main checkout."""
+    """Worktrees other than the main checkout.
+
+    git lists the main worktree first. Comparing paths instead would misfire for submodules,
+    whose main worktree git reports as the module's git dir (.git/modules/<name>).
+    """
     if not (repo / ".git").exists():
         return []
-    paths: list[Path] = []
-    for line in git(repo, "worktree", "list", "--porcelain").splitlines():
-        if line.startswith("worktree "):
-            p = Path(line.split(" ", 1)[1])
-            if p.resolve() != repo.resolve():
-                paths.append(p)
-    return paths
+    lines = git(repo, "worktree", "list", "--porcelain").splitlines()
+    paths = [Path(ln.split(" ", 1)[1]) for ln in lines if ln.startswith("worktree ")]
+    return paths[1:]

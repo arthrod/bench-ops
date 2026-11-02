@@ -98,3 +98,15 @@ def test_git_ignores_hook_environment(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("GIT_INDEX_FILE", str(other / ".git" / "index"))
     monkeypatch.setenv("GIT_WORK_TREE", str(other))
     assert status(dest).dirty == 1
+
+
+def test_submodule_main_worktree_is_not_stray(tmp_path: Path) -> None:
+    child = make_origin(tmp_path / "child")
+    parent_origin = make_origin(tmp_path / "parent")
+    parent = tmp_path / "parent-clone"
+    clone_or_pull(str(parent_origin), parent, "main")
+    subprocess.run(
+        ["git", "-c", "protocol.file.allow=always", "submodule", "add", "-q", str(child), "sub"],
+        cwd=parent, check=True,
+    )
+    assert worktrees(parent / "sub") == []

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 
 from bench_ops.config import Repo
 from bench_ops.gitx import status as git_status
@@ -43,6 +44,11 @@ def latest_tags(repos: list[Repo]) -> dict[str, str]:
     return out
 
 
+def _short(p: Path) -> str:
+    home = Path.home()
+    return f"~/{p.relative_to(home)}" if p.is_relative_to(home) else str(p)
+
+
 def _describe(w: Witness) -> str:
     if w.ok:
         return f"verified {w.checked} files on HF"
@@ -57,7 +63,7 @@ def _describe(w: Witness) -> str:
 def report(repo: Repo, latest: dict[str, str], witness: WitnessFn | None) -> RepoReport:
     """witness=None means offline: producers report their tag without asking Hugging Face."""
     g = git_status(repo.local_path)
-    stray = [str(p) for p in worktrees(repo.local_path) if ".worktrees" not in p.parts]
+    stray = [_short(p) for p in worktrees(repo.local_path) if ".worktrees" not in p.parts]
     release, verdict = "", ""
     if repo.role == "producer":
         last = _last_release(repo)
