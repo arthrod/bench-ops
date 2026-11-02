@@ -1,0 +1,16 @@
+# Pulled into every linked repo through `remotes:` (see REPO-lefthook.yml). Edit here only.
+# Every job must finish in seconds; nothing here waits on CI or uploads anything.
+# Escape hatches: LEFTHOOK=0 git commit ... (skip all), BENCH_ALLOW_STALE=1 git push ... (stale lock).
+
+pre-commit:
+  parallel: true
+  jobs:
+    - name: size guard
+      run: bench hook size-guard {staged_files}
+    - name: secrets
+      run: bench hook secrets {staged_files}
+
+pre-push:
+  jobs:
+    - name: release state
+      run: bench status --offline --fail-on-stale --repo .

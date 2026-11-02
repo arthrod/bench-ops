@@ -1,0 +1,13 @@
+# bench-ops guards itself with local commands (uv run), so hook edits are testable before push.
+pre-commit:
+  parallel: true
+  jobs:
+    - name: size guard
+      run: uv run bench hook size-guard {staged_files}
+    - name: secrets
+      run: uv run bench hook secrets {staged_files}
+    - name: ruff
+      glob: "*.py"
+      run: uv run ruff check {staged_files}
+    - name: tests
+      run: uv run pytest -q
