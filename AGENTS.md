@@ -36,6 +36,7 @@ uv tool install --editable ~/bench          # the `bench` command; elsewhere: uv
 brew install lefthook ripsecrets
 bench sync                                  # clone/fast-forward every repo, install hooks; exits 1 on HOOKS NOT ACTIVE
 bench status                                # branch, dirt, stray worktrees, release ledger per repo (--offline skips HF)
+bench work                                  # list `.work/` worktrees (age, dirt, merged-or-pushed); `--yes` removes only the old, clean, merged/pushed ones, via `git worktree remove` (never `--force`)
 ```
 
 Per-repo tooling the steps below need: `uv` (Python 3.14), `pnpm`, LibreOffice and Microsoft Word on macOS (ndb oracle and the Word gates), `wrangler` (`bunx wrangler login`, the token lives about an hour), `hf auth login`, `gh auth login`. Secrets stay in each repo's git-ignored `.env`; check their length, never print them.

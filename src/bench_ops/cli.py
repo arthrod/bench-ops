@@ -24,6 +24,7 @@ from bench_ops.models import LedgerEntry, Lock, Manifest, dumps
 from bench_ops.publish import PublishError, run_script
 from bench_ops.publish import publish as publish_release
 from bench_ops.status import latest_tags, report
+from bench_ops.work import parse_duration, remove, scan
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
 hook_app = typer.Typer(no_args_is_help=True, help="Hooks run by lefthook (see lefthook/common.yml).")
@@ -325,6 +326,52 @@ def gc_cmd(
             style = "green" if v.deletable else "yellow"
             word = "deletable" if v.deletable else "keep"
             console.print(f"[{style}]{word}[/] {v.path}  ·  {v.reason}")
+
+
+@app.command("work")
+def work_cmd(
+    older_than: Annotated[
+        str, typer.Option(help="Removal TTL, e.g. 14d or 6h (age of the last commit).")
+    ] = "14d",
+    yes: Annotated[
+        bool, typer.Option(help="Actually remove; without it bench only lists.")
+    ] = False,
+) -> None:
+    """List the worktrees under BENCH_ROOT/.work and remove the stale ones (plan 6 B).
+
+    A worktree leaves only when it is older than the TTL, clean, and merged into origin's
+    default branch or pushed there — and only with --yes, through `git worktree remove`
+    (never --force). Everything else is listed with the reason it stays. Origin refs are
+    read as the checkout sees them: `bench sync` refreshes them.
+    """
+    cfg = _config()
+    try:
+        ttl = parse_duration(older_than)
+    except ValueError as e:
+        console.print(f"[red]{e}[/]")
+        raise typer.Exit(2) from None
+    now = datetime.now(UTC)
+    infos = scan(cfg.root / ".work", cfg.repos, ttl=ttl, now=now)
+    if not infos:
+        console.print(f"no worktrees under {cfg.root / '.work'}")
+        return
+    for info in infos:
+        age = f"{(now - info.last_commit).days}d" if info.last_commit is not None else "?"
+        line = f"{info.path.name:<24} branch={info.branch:<18} age={age:<6} dirty={info.dirty}"
+        if info.removable:
+            if not yes:
+                console.print(
+                    f"[yellow]would remove[/] {line}  ·  old, clean, merged or pushed (needs --yes)"
+                )
+            else:
+                try:
+                    remove(info)
+                except (subprocess.CalledProcessError, ValueError) as e:
+                    console.print(f"[yellow]keep[/] {line}  ·  git worktree remove refused: {e}")
+                else:
+                    console.print(f"[red]removed[/] {line}")
+        else:
+            console.print(f"[yellow]keep[/] {line}  ·  {'; '.join(info.reasons)}")
 
 
 StagedFiles = Annotated[list[Path] | None, typer.Argument(help="Staged files (from lefthook).")]

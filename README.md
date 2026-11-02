@@ -6,5 +6,6 @@ The workspace for neurotic_docx_bench, editors_trial, benchmarks-law and jubarte
     bench sync                        # clones/pulls every repo in repos.toml, installs hooks, exits 1 if a repo's hooks are inactive
     bench status                      # branches, dirt, release ledger vs Hugging Face
     bench publish <producer> <tag>    # release bundle to the producer's HF dataset (creates nothing; `--dry-run` stages only)
+    bench work [--older-than 14d] [--yes]   # list `.work/` worktrees; remove the old, clean, merged-or-pushed ones (needs --yes)
 
 Start here: AGENTS.md (which repo does what, the 0-to-100 release order). Roles and rules: docs/CONTRACT.md. Plans: docs/plans/.
