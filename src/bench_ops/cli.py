@@ -15,6 +15,7 @@ from rich.table import Table as RichTable
 from bench_ops.config import Config, load_config
 from bench_ops.gitx import clone_or_pull
 from bench_ops.hf import HfHub, Witness, sha256_of, verify_manifest
+from bench_ops.hooks import secrets_command, size_guard
 from bench_ops.models import LedgerEntry, Manifest
 from bench_ops.status import latest_tags, report
 
@@ -113,3 +114,33 @@ def status(
             "or push with BENCH_ALLOW_STALE=1[/]"
         )
         raise typer.Exit(1)
+
+
+StagedFiles = Annotated[list[Path] | None, typer.Argument(help="Staged files (from lefthook).")]
+
+
+@hook_app.command("size-guard")
+def hook_size_guard(files: StagedFiles = None) -> None:
+    """Refuse staged files over 2 MB and binaries under data directories."""
+    problems = size_guard(files or [], root=Path.cwd())
+    for p in problems:
+        console.print(f"[red]{p}[/]")
+    if problems:
+        console.print(
+            "Data goes to Hugging Face; git keeps code and small ledgers (bench-ops docs/CONTRACT.md)."
+        )
+        raise typer.Exit(1)
+
+
+@hook_app.command("secrets")
+def hook_secrets(files: StagedFiles = None) -> None:
+    """Scan staged files for secrets with ripsecrets."""
+    if not files:
+        return
+    argv = secrets_command(files)
+    if argv is None:
+        console.print("[red]ripsecrets is not installed: brew install ripsecrets[/]")
+        raise typer.Exit(1)
+    rc = subprocess.run(argv, check=False).returncode
+    if rc:
+        raise typer.Exit(rc)
