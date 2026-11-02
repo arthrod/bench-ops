@@ -31,7 +31,7 @@ A local file may be deleted only when its sha256 is listed in a release manifest
 
 - Producers publish `release/<tag>/{manifest.json, scores.json, cases/*.json}` to HF and append one line to `release/index.jsonl` (`LedgerEntry`). Tags: `ndb-vX.Y.Z[.n]`, `et-vX.Y.Z`.
 - Every release stays recorded: the ledger only grows, and each tag's manifest stays on HF at its pinned revision.
-- Consumers pin tags in `bench.lock` (`<producer>=<tag>` per line) and render `scores.json` through `@jandira-tech/bench-viewer` with their theme. Frontends show the latest score; "latest" means the lock was bumped, never a runtime fetch.
+- Consumers pin tags in `bench.lock` (`<producer>=<tag> manifest=<sha256>` per line, plan 4: the manifest sha pins content, so a moved HF tag changes nothing) and materialise them with `bench fetch` under `.bench/<producer>/`, rendering `scores.json` through `@jandira-tech/bench-viewer` with their theme. Frontends show the latest score; "latest" means the lock was bumped, never a runtime fetch.
 
 ## Hooks
 

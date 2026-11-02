@@ -102,6 +102,39 @@ def test_lock_rejects_garbage() -> None:
         Lock.parse("just a tag\n")
 
 
+def test_lock_round_trips_manifest_shas() -> None:
+    lock = Lock.parse("ndb=ndb-v1.0.0 manifest=" + "a" * 64 + "\net=et-v0.9.3\n")
+    assert lock.tags == {"ndb": "ndb-v1.0.0", "et": "et-v0.9.3"}
+    assert lock.shas == {"ndb": "a" * 64}
+    assert lock.render() == "et=et-v0.9.3\nndb=ndb-v1.0.0 manifest=" + "a" * 64 + "\n"
+    assert Lock.parse(lock.render()) == lock
+
+
+def test_lock_accepts_lines_without_a_manifest_sha() -> None:
+    lock = Lock.parse("ndb=ndb-v1.0.0\n")
+    assert lock.tags == {"ndb": "ndb-v1.0.0"}
+    assert lock.shas == {}
+    assert lock.render() == "ndb=ndb-v1.0.0\n"  # rendered exactly as parsed
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "ndb=ndb-v1.0.0 manifest=\n",  # no value
+        "ndb=ndb-v1.0.0 manifest=abc\n",  # not 64 hex chars
+        "ndb=ndb-v1.0.0 manifest=" + "A" * 64 + "\n",  # uppercase is not a sha256 spelling
+        "ndb=ndb-v1.0.0 manifest=" + "a" * 63 + "\n",  # too short
+        "ndb=ndb-v1.0.0 manifest=" + "a" * 64 + " extra\n",  # a third token
+        "ndb=ndb-v1.0.0 pin=" + "a" * 64 + "\n",  # not the manifest= key
+        "ndb=ndb-v1.0.0 manifest\n",  # key without '='
+        "ndb=\n",  # no tag
+    ],
+)
+def test_lock_rejects_malformed_manifest_values(line: str) -> None:
+    with pytest.raises(ValueError, match="bench.lock"):
+        Lock.parse(line)
+
+
 def test_scores_minimal() -> None:
     s = Scores(
         version="1.0.0",
