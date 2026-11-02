@@ -23,9 +23,10 @@ A local file may be deleted only when its sha256 is listed in a release manifest
 ## Hooks
 
 - Hooks come from `bench-ops/lefthook/common.yml` through lefthook `remotes:`; each repo's `lefthook.yml` is the copy of `lefthook/REPO-lefthook.yml`.
-- They run locally in seconds: size guard and ripsecrets on commit, `bench status --fail-on-stale` on push. No CI gate.
-- Escape hatches: `LEFTHOOK=0` skips all hooks; `BENCH_ALLOW_STALE=1` lets a push through with a lock behind its producer.
+- They run locally in seconds, all on pre-commit: size guard, ripsecrets, and `bench status --fail-on-stale`. No CI gate.
+- No pre-push or post-* hooks: those belong to git-lfs, and lefthook taking them over makes pushes from branches without this config skip LFS uploads silently.
+- Escape hatches: `LEFTHOOK=0` skips all hooks; `BENCH_ALLOW_STALE=1` lets a commit through with a lock behind its producer.
 - Requirements on each machine: `uv tool install --editable ~/bench` (or `uv tool install git+https://github.com/arthrod/bench-ops`), `brew install lefthook ripsecrets`.
 - Lefthook fails open: if the first fetch of the shared config fails, it installs no jobs. `bench sync` checks for that and exits 1 with `HOOKS NOT ACTIVE`; after one successful fetch the cached copy works offline.
 - `ref: main` is deliberate (decision D5): a hook change lands once, here, instead of as four pin bumps. The trust boundary is push access to `arthrod/bench-ops` main.
-- `bench status --repo <path>` matches a checkout by configured path, else by origin URL, so clones and worktrees elsewhere get the same pre-push check.
+- `bench status --repo <path>` matches a checkout by configured path, else by origin URL, so clones and worktrees elsewhere get the same release-state check.

@@ -1,6 +1,11 @@
 # Pulled into every linked repo through `remotes:` (see REPO-lefthook.yml). Edit here only.
 # Every job must finish in seconds; nothing here waits on CI or uploads anything.
-# Escape hatches: LEFTHOOK=0 git commit ... (skip all), BENCH_ALLOW_STALE=1 git push ... (stale lock).
+# Escape hatches: LEFTHOOK=0 git commit ... (skip all), BENCH_ALLOW_STALE=1 git commit ... (stale lock).
+#
+# Only pre-commit, on purpose. lefthook replaces every hook it configures; for git-lfs hooks
+# (pre-push, post-*) it then runs `git lfs` only on branches whose lefthook.yml configures that
+# hook, so on older branches pushes would succeed without uploading LFS objects (ndb is LFS).
+# tests/test_lefthook_config.py enforces this.
 
 pre-commit:
   parallel: true
@@ -9,8 +14,5 @@ pre-commit:
       run: bench hook size-guard {staged_files}
     - name: secrets
       run: bench hook secrets {staged_files}
-
-pre-push:
-  jobs:
     - name: release state
       run: bench status --offline --fail-on-stale --repo .

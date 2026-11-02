@@ -97,7 +97,7 @@ def status(
         bool, typer.Option(help="Exit 1 when a consumer lock is behind its producer.")
     ] = False,
     repo: Annotated[
-        Path | None, typer.Option(help="Only the repo at this path (pre-push hook).")
+        Path | None, typer.Option(help="Only the repo at this path (the pre-commit hook).")
     ] = None,
 ) -> None:
     """Branch, dirt, worktrees and release state of every linked repo."""
@@ -127,7 +127,7 @@ def status(
             return
         console.print(
             "[red]a consumer lock is behind its producer; bump bench.lock "
-            "or push with BENCH_ALLOW_STALE=1[/]"
+            "or commit with BENCH_ALLOW_STALE=1[/]"
         )
         raise typer.Exit(1)
 
