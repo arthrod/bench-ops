@@ -68,3 +68,76 @@ def test_cli_secrets_without_tool_fails_with_hint(tmp_path: Path,
     (tmp_path / "a.txt").write_text("x\n")
     r = runner.invoke(app, ["hook", "secrets", "a.txt"])
     assert r.exit_code == 1 and "brew install ripsecrets" in r.output
+
+
+def _git_repo_with(tmp_path: Path, name: str, size: int) -> Path:
+    import subprocess
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+    (repo / name).write_bytes(b"x" * size)
+    subprocess.run(["git", "add", name], cwd=repo, check=True)
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "-c",
+                    "core.hooksPath=/dev/null", "commit", "-qm", "seed"], cwd=repo, check=True)
+    return repo
+
+
+def test_growing_an_already_tracked_ledger_is_allowed(tmp_path: Path,
+                                                     monkeypatch: pytest.MonkeyPatch) -> None:
+    """results/converters.jsonl is 18 MB in ndb; appending a run's lines must not be refused."""
+    import subprocess
+
+    repo = _git_repo_with(tmp_path, "converters.jsonl", MB2 + 10)
+    with (repo / "converters.jsonl").open("ab") as f:
+        f.write(b'{"line": 1}\n')
+    subprocess.run(["git", "add", "converters.jsonl"], cwd=repo, check=True)
+    monkeypatch.chdir(repo)
+    r = runner.invoke(app, ["hook", "size-guard", "converters.jsonl"])
+    assert r.exit_code == 0, r.output
+
+
+def test_a_new_large_file_is_still_refused_inside_git(tmp_path: Path,
+                                                     monkeypatch: pytest.MonkeyPatch) -> None:
+    import subprocess
+
+    repo = _git_repo_with(tmp_path, "small.txt", 10)
+    (repo / "new.jsonl").write_bytes(b"x" * (MB2 + 10))
+    subprocess.run(["git", "add", "new.jsonl"], cwd=repo, check=True)
+    monkeypatch.chdir(repo)
+    r = runner.invoke(app, ["hook", "size-guard", "new.jsonl"])
+    assert r.exit_code == 1 and "new.jsonl" in r.output
+
+
+def test_a_tracked_file_jumping_by_more_than_the_limit_is_refused(tmp_path: Path,
+                                                                 monkeypatch: pytest.MonkeyPatch) -> None:
+    """Growth is allowed; dumping another 2 MB into a tracked file in one commit is not."""
+    import subprocess
+
+    repo = _git_repo_with(tmp_path, "big.json", MB2 + 10)
+    (repo / "big.json").write_bytes(b"y" * (2 * MB2 + 100))
+    subprocess.run(["git", "add", "big.json"], cwd=repo, check=True)
+    monkeypatch.chdir(repo)
+    r = runner.invoke(app, ["hook", "size-guard", "big.json"])
+    assert r.exit_code == 1 and "big.json" in r.output
+
+
+def test_lfs_pointer_at_head_counts_as_the_real_size(tmp_path: Path,
+                                                    monkeypatch: pytest.MonkeyPatch) -> None:
+    """ndb's results/bench.jsonl is LFS: HEAD holds a pointer, not the bytes."""
+    import subprocess
+
+    from bench_ops.cli import _size_at_head
+
+    big = MB2 + 500
+    pointer = (
+        "version https://git-lfs.github.com/spec/v1\n"
+        f"oid sha256:{'a' * 64}\nsize {big}\n"
+    )
+    repo = _git_repo_with(tmp_path, "bench.jsonl", 1)
+    (repo / "bench.jsonl").write_text(pointer)
+    subprocess.run(["git", "add", "bench.jsonl"], cwd=repo, check=True)
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "-c",
+                    "core.hooksPath=/dev/null", "commit", "-qm", "lfs"], cwd=repo, check=True)
+    monkeypatch.chdir(repo)
+    assert _size_at_head("bench.jsonl") == big

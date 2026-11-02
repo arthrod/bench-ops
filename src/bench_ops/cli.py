@@ -13,7 +13,7 @@ from rich.console import Console
 from rich.table import Table as RichTable
 
 from bench_ops.config import Config, load_config
-from bench_ops.gitx import clone_or_pull, origin_url
+from bench_ops.gitx import clone_or_pull, git, origin_url
 from bench_ops.hf import HfHub, Witness, sha256_of, verify_manifest
 from bench_ops.hooks import secrets_command, size_guard
 from bench_ops.models import LedgerEntry, Manifest
@@ -132,13 +132,28 @@ def status(
         raise typer.Exit(1)
 
 
+def _size_at_head(rel: str) -> int | None:
+    """Size of the file in HEAD, or None when it is new (or there is no HEAD yet)."""
+    try:
+        size = int(git(Path.cwd(), "cat-file", "-s", f"HEAD:{rel}").strip())
+        if size < 1024:  # possibly a Git LFS pointer: its "size" line is the real size
+            blob = git(Path.cwd(), "cat-file", "-p", f"HEAD:{rel}")
+            if blob.startswith("version https://git-lfs.github.com/spec/"):
+                for line in blob.splitlines():
+                    if line.startswith("size "):
+                        return int(line.split()[1])
+        return size
+    except (subprocess.CalledProcessError, ValueError):
+        return None
+
+
 StagedFiles = Annotated[list[Path] | None, typer.Argument(help="Staged files (from lefthook).")]
 
 
 @hook_app.command("size-guard")
 def hook_size_guard(files: StagedFiles = None) -> None:
     """Refuse staged files over 2 MB and binaries under data directories."""
-    problems = size_guard(files or [], root=Path.cwd())
+    problems = size_guard(files or [], root=Path.cwd(), previous_size=_size_at_head)
     for p in problems:
         console.print(f"[red]{p}[/]")
     if problems:

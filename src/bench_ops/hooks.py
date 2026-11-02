@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+from collections.abc import Callable
 from pathlib import Path
 
 LIMIT = 2 * 1024 * 1024
@@ -17,8 +18,21 @@ def _mb(n: int) -> str:
     return f"{n / (1024 * 1024):.1f} MB"
 
 
-def size_guard(files: list[Path], root: Path, limit: int = LIMIT) -> list[str]:
-    """Problems with the staged files; paths are relative to the repo root, as lefthook passes them."""
+def _untracked(_rel: str) -> int | None:
+    return None
+
+
+def size_guard(
+    files: list[Path],
+    root: Path,
+    limit: int = LIMIT,
+    previous_size: Callable[[str], int | None] = _untracked,
+) -> list[str]:
+    """Problems with the staged files; paths are relative to the repo root, as lefthook passes them.
+
+    A new file may not exceed the limit. A file already tracked (previous_size gives its size at
+    HEAD) may grow, as the append-only ledgers do, but not by more than the limit in one commit.
+    """
     problems: list[str] = []
     for f in files:
         path = f if f.is_absolute() else root / f
@@ -26,8 +40,12 @@ def size_guard(files: list[Path], root: Path, limit: int = LIMIT) -> list[str]:
             continue
         rel = path.resolve().relative_to(root.resolve()).as_posix()
         size = path.stat().st_size
-        if size > limit:
+        before = previous_size(rel)
+        if before is None and size > limit:
             problems.append(f"{rel}: {_mb(size)} over the {_mb(limit)} limit")
+            continue
+        if before is not None and size - before > limit:
+            problems.append(f"{rel}: grew by {_mb(size - before)}, over the {_mb(limit)} limit")
             continue
         top = next((d for d in BLOCKED_DIRS if rel.startswith(d + "/")), None)
         if top and path.suffix.lower() in BLOCKED_SUFFIXES:
