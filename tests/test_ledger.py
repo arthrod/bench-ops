@@ -2,7 +2,7 @@
 
 from datetime import UTC, datetime
 
-from bench_ops.ledger import check_ledger  # isort: skip
+from bench_ops.ledger import check_ledger
 from bench_ops.models import HfRef, LedgerEntry
 
 CREATED = datetime(2026, 11, 2, tzinfo=UTC)

@@ -50,6 +50,27 @@ class HfHub:
 
         return Path(hf_hub_download(repo, path, revision=revision, repo_type="dataset"))
 
+    # ---- the write side, used by `bench publish` (plan 2) ---------------------------------
+
+    def exists(self, repo: str, path: str, revision: str = "main") -> bool:
+        return self.api.file_exists(repo, path, revision=revision, repo_type="dataset")
+
+    def commit(self, repo: str, files: dict[str, Path], message: str) -> str:
+        """One commit adding `files` (path in repo -> local path); returns CommitInfo.oid (D10)."""
+        from huggingface_hub import CommitOperationAdd
+
+        operations = [
+            CommitOperationAdd(path_in_repo=path, path_or_fileobj=local)
+            for path, local in files.items()
+        ]
+        info = self.api.create_commit(
+            repo, operations, commit_message=message, repo_type="dataset"
+        )
+        return info.oid  # str(info) is the commit URL, not the revision
+
+    def create_tag(self, repo: str, tag: str, revision: str) -> None:
+        self.api.create_tag(repo, tag=tag, revision=revision, repo_type="dataset")
+
 
 @dataclass
 class Witness:

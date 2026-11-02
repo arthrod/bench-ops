@@ -24,6 +24,7 @@ class RepoReport:
     stray_worktrees: list[str]
     release: str
     witness: str
+    broken: bool = False  # an online witness that is not ok (D16): the record is not intact
 
     @property
     def stale(self) -> bool:
@@ -64,14 +65,19 @@ def report(repo: Repo, latest: dict[str, str], witness: WitnessFn | None) -> Rep
     """witness=None means offline: producers report their tag without asking Hugging Face."""
     g = git_status(repo.local_path)
     stray = [_short(p) for p in worktrees(repo.local_path) if ".worktrees" not in p.parts]
-    release, verdict = "", ""
+    release, verdict, broken = "", "", False
     if repo.role == "producer":
         last = _last_release(repo)
         if last is None:
             release = "no releases yet"
         else:
             release = last.tag
-            verdict = "(offline)" if witness is None else _describe(witness(last))
+            if witness is None:
+                verdict = "(offline)"
+            else:
+                w = witness(last)
+                verdict = _describe(w)
+                broken = not w.ok
     else:
         lock_path = repo.local_path / "bench.lock"
         if not lock_path.exists():
@@ -85,4 +91,4 @@ def report(repo: Repo, latest: dict[str, str], witness: WitnessFn | None) -> Rep
                 if k in latest and latest[k] != v
             ]
             verdict = "stale: " + "; ".join(stale) if stale else "up to date"
-    return RepoReport(repo.name, repo.role, g.branch, g.dirty, stray, release, verdict)
+    return RepoReport(repo.name, repo.role, g.branch, g.dirty, stray, release, verdict, broken)

@@ -14,5 +14,8 @@ pre-commit:
       run: bench hook size-guard {staged_files}
     - name: secrets
       run: bench hook secrets {staged_files}
+    - name: ledger
+      glob: "release/index.jsonl"
+      run: bench hook ledger
     - name: release state
       run: bench status --offline --fail-on-stale --repo .

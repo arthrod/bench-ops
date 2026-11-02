@@ -8,17 +8,34 @@ import tomllib
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field, PrivateAttr
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
 Role = Literal["producer", "consumer"]
 
 
+class ReleaseSpec(BaseModel):
+    """[repos.release]: what `bench publish` uploads. Strict, so a typo fails at load (D18).
+
+    `served` must stay empty until the R2 mirror has a content witness (review D2/D3/D11–D13):
+    publish refuses a non-empty list, so the field exists only to make that refusal explicit.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    hf_repo: str
+    files: list[str]  # globs, repo-relative
+    served: list[str] = []
+
+
 class Repo(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str
     url: str
     branch: str = "main"
     role: Role
     path: Path | None = None
+    release: ReleaseSpec | None = None
     _root: Path = PrivateAttr(default=Path("."))
 
     @property

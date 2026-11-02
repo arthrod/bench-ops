@@ -4,7 +4,7 @@ import hashlib
 from datetime import UTC, datetime
 from pathlib import Path
 
-from bench_ops.gc import Verdict, VerifiedManifest, fetch_verified, verdicts  # isort: skip
+from bench_ops.gc import Verdict, VerifiedManifest, fetch_verified, verdicts
 from bench_ops.models import FileEntry, HfRef, LedgerEntry, Manifest, dumps
 
 HF_REPO = "arthrod/neurotic_docx_bench"

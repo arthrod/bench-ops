@@ -10,8 +10,7 @@ import pytest
 from bench_ops import config
 from bench_ops.gitx import git
 from bench_ops.models import HfRef, LedgerEntry
-
-from bench_ops.publish import (  # isort: skip
+from bench_ops.publish import (
     PublishError,
     StagedFile,
     append_ledger,

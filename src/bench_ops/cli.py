@@ -5,18 +5,24 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 
 import typer
+from pydantic import ValidationError
 from rich.console import Console
 from rich.table import Table as RichTable
 
 from bench_ops.config import Config, load_config
+from bench_ops.gc import VerifiedManifest, fetch_verified, verdicts
 from bench_ops.gitx import clone_or_pull, git, origin_url
 from bench_ops.hf import HfHub, Witness, sha256_of, verify_manifest
 from bench_ops.hooks import secrets_command, size_guard
-from bench_ops.models import LedgerEntry, Manifest
+from bench_ops.ledger import check_ledger
+from bench_ops.models import LedgerEntry, Manifest, dumps
+from bench_ops.publish import PublishError
+from bench_ops.publish import publish as publish_release
 from bench_ops.status import latest_tags, report
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
@@ -115,12 +121,21 @@ def status(
     for col in ("repo", "role", "branch", "dirty", "stray worktrees", "release", "witness"):
         table.add_column(col, overflow="fold")
     stale = False
+    broken = False
     for r in repos:
         rep = report(r, latest, witness)
         stale |= rep.stale
+        broken |= rep.broken
+        cell = f"BROKEN: {rep.witness}" if rep.broken else (rep.witness or "-")
         table.add_row(rep.name, rep.role, rep.branch, str(rep.dirty),
-                      "\n".join(rep.stray_worktrees) or "-", rep.release, rep.witness or "-")
+                      "\n".join(rep.stray_worktrees) or "-", rep.release, cell)
     console.print(table)
+    if fail_on_stale and broken:
+        console.print(
+            "[red]BROKEN: a producer's release is not intact on Hugging Face; "
+            "repair the record before relying on it or deleting anything (gc refuses)[/]"
+        )
+        raise typer.Exit(1)
     if fail_on_stale and stale:
         if os.environ.get("BENCH_ALLOW_STALE") == "1":
             console.print("[yellow]consumer lock is behind; allowed by BENCH_ALLOW_STALE=1[/]")
@@ -145,6 +160,90 @@ def _size_at_head(rel: str) -> int | None:
         return size
     except (subprocess.CalledProcessError, ValueError):
         return None
+
+
+@app.command("publish")
+def publish_cmd(
+    producer: Annotated[str, typer.Argument(help="Producer name in repos.toml.")],
+    tag: Annotated[str, typer.Argument(help="Release tag, e.g. ndb-v0.0.1.")],
+    dry_run: Annotated[
+        bool, typer.Option(help="Local checks and staging only: no hub calls, no writes.")
+    ] = False,
+) -> None:
+    """Upload a producer's release to Hugging Face, verify it, then ledger and tag it (plan 2).
+
+    Never pushes git: the ledger commit and the tag stay local until the printed push command
+    is run by hand.
+    """
+    cfg = _config()
+    try:
+        repo = cfg.by_name(producer)
+    except KeyError:
+        known = ", ".join(r.name for r in cfg.repos)
+        console.print(f"[red]unknown repo {producer!r}; known: {known}[/]")
+        raise typer.Exit(1) from None
+    try:
+        m = publish_release(repo, tag, HfHub(), now=datetime.now(UTC), dry_run=dry_run)
+    except PublishError as e:
+        console.print(f"[red]{e}[/]")
+        raise typer.Exit(1) from None
+    console.print(dumps(m), markup=False, highlight=False)
+    if not dry_run:
+        console.print(
+            f"push with: git -C {repo.local_path} push origin {repo.branch} && "
+            f"git -C {repo.local_path} push origin {tag}"
+        )
+
+
+@app.command("gc")
+def gc_cmd(
+    paths: Annotated[list[Path], typer.Argument(help="Local files to consider deleting.")],
+    yes: Annotated[
+        bool, typer.Option(help="Actually delete; without it gc only reports.")
+    ] = False,
+) -> None:
+    """Delete local files whose bytes the Hub records in a verified release manifest (plan 2).
+
+    The Hub is the only authority: every ledger line is verified against it, a served file is
+    never deleted, and nothing under .git/ is touched.
+    """
+    cfg = _config()
+    hub = HfHub()
+    verified: list[VerifiedManifest] = []
+    unverified: set[str] = set()  # fail closed: these shas are never deletable
+    for repo in cfg.by_role("producer"):
+        ledger = repo.local_path / "release" / "index.jsonl"
+        if not ledger.exists():
+            continue
+        lines = [ln for ln in ledger.read_text().splitlines() if ln.strip()]
+        for i, line in enumerate(lines, 1):
+            try:
+                entry = LedgerEntry.from_line(line)
+            except ValidationError:
+                console.print(f"[red]{repo.name}: ledger line {i} is not a ledger entry[/]")
+                raise typer.Exit(1) from None
+            vm = fetch_verified(entry, hub)
+            if vm is not None:
+                verified.append(vm)
+            else:
+                local = repo.local_path / "release" / entry.tag / "manifest.json"
+                if local.exists():  # untrusted bytes, but its shas must block deletes
+                    try:
+                        unverified.update(
+                            f.sha256
+                            for f in Manifest.model_validate_json(local.read_text()).files
+                        )
+                    except ValidationError:
+                        pass
+    targets = [p if p.is_absolute() else Path.cwd() / p for p in paths]
+    for v in verdicts(targets, verified, unverified):
+        if yes and v.deletable:
+            v.path.unlink()
+            console.print(f"[red]deleted[/] {v.path}  ·  {v.reason}")
+        else:
+            style = "green" if v.deletable else "yellow"
+            word = "deletable" if v.deletable else "keep"
+            console.print(f"[{style}]{word}[/] {v.path}  ·  {v.reason}")
 
 
 StagedFiles = Annotated[list[Path] | None, typer.Argument(help="Staged files (from lefthook).")]
@@ -175,3 +274,36 @@ def hook_secrets(files: StagedFiles = None) -> None:
     rc = subprocess.run(argv, check=False).returncode
     if rc:
         raise typer.Exit(rc)
+
+
+LEDGER = "release/index.jsonl"
+
+
+def _git_text(repo: Path, *args: str) -> str | None:
+    try:
+        return git(repo, *args)
+    except subprocess.CalledProcessError:
+        return None
+
+
+@hook_app.command("ledger")
+def hook_ledger() -> None:
+    """Refuse anything but an append to release/index.jsonl (D7/D14).
+
+    Compares the staged blob (`git show :release/index.jsonl`) with HEAD's, so the bytes
+    validated are the bytes committed; a staged deletion or rename is refused too.
+    """
+    cwd = Path.cwd()
+    staged = _git_text(cwd, "show", f":{LEDGER}")
+    if staged is None:  # not in the index: a deletion/rename, or nothing staged
+        diff = _git_text(cwd, "diff", "--cached", "--name-status", "--", LEDGER) or ""
+        if any(ln.split("\t")[0].startswith(("D", "R")) for ln in diff.splitlines()):
+            console.print(f"[red]{LEDGER} may only grow: staged deletions and renames are refused[/]")
+            raise typer.Exit(1)
+        return
+    problems = check_ledger(_git_text(cwd, "show", f"HEAD:{LEDGER}"), staged)
+    for p in problems:
+        console.print(f"[red]{p}[/]")
+    if problems:
+        console.print(f"[red]{LEDGER} is append-only (bench-ops docs/CONTRACT.md)[/]")
+        raise typer.Exit(1)
