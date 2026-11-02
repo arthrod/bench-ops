@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable, Iterable
 from datetime import datetime
 from itertools import pairwise
@@ -117,13 +118,20 @@ class LedgerEntry(Strict):
 
 
 class Lock(BaseModel):
-    """bench.lock: `<producer>=<tag>` per line, sorted. Replaces jubarte-site/fixtures.lock."""
+    """bench.lock: `<producer>=<tag>[ manifest=<sha256>]` per line, sorted (plan 4).
+
+    The manifest sha pins content: a moved HF tag cannot change what a consumer renders.
+    `tags` alone decides staleness (bench status), so a line without `manifest=` — a
+    plan-2-era lock — stays valid until `bench bump` pins it.
+    """
 
     tags: dict[str, str]
+    shas: dict[str, str] = Field(default_factory=dict)
 
     @classmethod
     def parse(cls, text: str) -> Lock:
         tags: dict[str, str] = {}
+        shas: dict[str, str] = {}
         for raw in text.splitlines():
             line = raw.strip()
             if not line or line.startswith("#"):
@@ -131,11 +139,29 @@ class Lock(BaseModel):
             if "=" not in line:
                 raise ValueError(f"bench.lock line is not <producer>=<tag>: {line!r}")
             k, v = (s.strip() for s in line.split("=", 1))
-            tags[k] = v
-        return cls(tags=tags)
+            parts = v.split()
+            if not parts:
+                raise ValueError(f"bench.lock line has no tag: {line!r}")
+            if len(parts) > 2 or (len(parts) == 2 and not parts[1].startswith("manifest=")):
+                raise ValueError(
+                    f"bench.lock line is not <producer>=<tag>[ manifest=<sha256>]: {line!r}"
+                )
+            tags[k] = parts[0]
+            if len(parts) == 2:
+                sha = parts[1][len("manifest="):]
+                if re.fullmatch(r"[0-9a-f]{64}", sha) is None:
+                    raise ValueError(
+                        f"bench.lock manifest= value must be a sha256 (64 hex chars): {line!r}"
+                    )
+                shas[k] = sha
+        return cls(tags=tags, shas=shas)
 
     def render(self) -> str:
-        return "".join(f"{k}={self.tags[k]}\n" for k in sorted(self.tags))
+        return "".join(
+            f"{k}={self.tags[k]}\n" if k not in self.shas
+            else f"{k}={self.tags[k]} manifest={self.shas[k]}\n"
+            for k in sorted(self.tags)
+        )
 
 
 # ---- scores.json: the numbers every frontend prints ------------------------------------

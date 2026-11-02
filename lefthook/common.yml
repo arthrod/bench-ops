@@ -23,3 +23,10 @@ pre-commit:
       run: bench hook ledger
     - name: release state
       run: bench status --offline --fail-on-stale --repo .
+    - name: fetch check
+      # Plan 4: a changed bench.lock re-verifies .bench/ offline (manifest + every listed
+      # file hash to the pin; extras refused). Glob-gated on bench.lock because .bench/ is
+      # git-ignored (and the size guard blocks it anyway) — the lock is the only staged
+      # thing that can make the check's verdict change.
+      glob: "bench.lock"
+      run: bench fetch --check --repo .

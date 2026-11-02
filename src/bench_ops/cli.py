@@ -16,6 +16,10 @@ from rich.table import Table as RichTable
 
 from bench_ops.archive import archive as archive_release
 from bench_ops.config import Config, load_config
+from bench_ops.fetch import LOCK as LOCK_NAME
+from bench_ops.fetch import FetchError, check_tree
+from bench_ops.fetch import bump as bump_pin
+from bench_ops.fetch import fetch as fetch_tree
 from bench_ops.gc import (
     VerifiedManifest,
     fetch_verified,
@@ -216,6 +220,68 @@ def publish_cmd(
         )
 
 
+@app.command("bump")
+def bump_cmd(
+    producer: Annotated[str, typer.Argument(help="Producer name in repos.toml.")],
+    repo: Annotated[
+        Path | None, typer.Option(help="The consumer checkout whose bench.lock is written (default: cwd).")
+    ] = None,
+) -> None:
+    """Pin the producer's latest release in bench.lock: <producer>=<tag> manifest=<sha256>.
+
+    Reads the producer's last release/index.jsonl line (from its checkout in repos.toml),
+    creates bench.lock when missing, keeps every other producer's line, and prints
+    old -> new. The manifest sha pins content: a moved HF tag cannot change what the
+    consumer renders.
+    """
+    cfg = _config()
+    try:
+        name, old, new = bump_pin(producer, cfg, repo or Path.cwd())
+    except FetchError as e:
+        console.print(f"[red]{e}[/]")
+        raise typer.Exit(1) from None
+    console.print(f"{name}: {old} -> {new}")
+
+
+@app.command("fetch")
+def fetch_cmd(
+    repo: Annotated[
+        Path | None, typer.Option(help="The consumer checkout to fetch into (default: cwd).")
+    ] = None,
+    check: Annotated[
+        bool, typer.Option(help="Offline: verify .bench/ against bench.lock; download nothing.")
+    ] = False,
+) -> None:
+    """Materialise every bench.lock pin under <repo>/.bench/<producer>/ (plan 4).
+
+    Per lock line: the manifest is downloaded from the producer's HF dataset at the tag
+    and refused unless it hashes to the lock's manifest= sha; then every file it lists is
+    downloaded at the manifest's own pinned revision and verified. Files already present
+    with the right hash are skipped, and the tree swap is atomic per producer (scratch
+    directory, rename). Private datasets use the logged-in huggingface_hub token.
+    --check is offline (the pre-commit hook and `bench deploy` use it): manifest.json
+    must hash to the pin and every listed file to its entry; the first problem is named
+    and the exit code is 1.
+    """
+    cfg = _config()
+    root = repo or Path.cwd()
+    if check:
+        problems = check_tree(root)
+        if problems:
+            console.print(f"[red]{problems[0]}[/]")
+            raise typer.Exit(1) from None
+        console.print(f"ok: .bench/ matches {root / LOCK_NAME}")
+        return
+    try:
+        fetch_tree(root, cfg, HfHub())
+    except FetchError as e:
+        console.print(f"[red]{e}[/]")
+        raise typer.Exit(1) from None
+    except Exception as e:  # noqa: BLE001 -- a failed fetch is a message, never a traceback
+        console.print(f"[red]{type(e).__name__}: {e}[/]", markup=False, highlight=False)
+        raise typer.Exit(1) from None
+
+
 @app.command("deploy")
 def deploy_cmd(
     repo_name: Annotated[str, typer.Argument(help="Consumer name in repos.toml.")],
@@ -225,9 +291,10 @@ def deploy_cmd(
 ) -> None:
     """Run a consumer's deploy command with the version its bench.lock pins (plan 2 rev 3).
 
-    Consumer only: producers release with `bench publish`. Checks the lock first (`bench fetch
-    --check` verification is pending Plan 4), then substitutes {version} from the lock's tag of
-    its first producer. Deploys are outward-facing: without --yes the command is printed, not
+    Consumer only: producers release with `bench publish`. Proves the fetched tree first
+    (`bench fetch --check`, plan 4): .bench/ must match bench.lock byte for byte, or the
+    deploy is refused. Then substitutes {version} from the lock's tag of its first
+    producer. Deploys are outward-facing: without --yes the command is printed, not
     run.
     """
     cfg = _config()
@@ -250,16 +317,19 @@ def deploy_cmd(
             f"[red]no bench.lock at {lock_path}; release against a producer first[/]"
         )
         raise typer.Exit(1) from None
-    console.print(
-        "[yellow]fetch verification is pending Plan 4; only checked that bench.lock exists[/]"
-    )
+    problems = check_tree(repo.local_path)  # plan 4: prove .bench/ against the lock first
+    if problems:
+        console.print(f"[red]fetch check failed: {problems[0]}[/]")
+        console.print(f"[red]run `bench fetch --repo {repo.local_path}` before deploying[/]")
+        raise typer.Exit(1) from None
+    console.print("fetch check: ok — .bench/ matches bench.lock")
     if repo.deploy is None:
         console.print(f"[red]{repo.name} has no deploy command in repos.toml[/]")
         raise typer.Exit(1) from None
 
     command = repo.deploy
     if "{version}" in command:
-        lock = Lock.parse(lock_path.read_text())
+        lock = Lock.parse(lock_path.read_text())  # check_tree above already proved it parses
         if not lock.tags:
             console.print(
                 f"[red]{lock_path} pins no <producer>=<tag>; cannot substitute {{version}}[/]"

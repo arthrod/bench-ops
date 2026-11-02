@@ -1,5 +1,6 @@
 """The plan-2 CLI surface: bench hook ledger, bench publish --dry-run, bench gc, and the hook config."""
 
+import hashlib
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
@@ -9,7 +10,7 @@ from typer.testing import CliRunner
 
 from bench_ops.cli import app
 from bench_ops.gitx import clone_or_pull, git
-from bench_ops.models import HfRef, LedgerEntry
+from bench_ops.models import FileEntry, HfRef, LedgerEntry, Manifest, dumps
 from tests.test_gitx import make_origin
 
 runner = CliRunner()
@@ -98,6 +99,16 @@ def test_lefthook_common_configures_the_ledger_hook() -> None:
     assert "release/index.jsonl" in text
 
 
+def test_lefthook_common_configures_the_fetch_check_hook() -> None:
+    """Plan 4: a changed bench.lock re-verifies .bench/ offline (bench fetch --check).
+
+    Glob-gated on bench.lock: .bench/ itself is git-ignored (and the size guard blocks it
+    anyway), so the lock file is the only staged thing that can make the check relevant."""
+    text = (Path(__file__).resolve().parent.parent / "lefthook" / "common.yml").read_text()
+    assert "bench fetch --check --repo ." in text
+    assert 'glob: "bench.lock"' in text
+
+
 # ---- bench publish -----------------------------------------------------------------------
 
 
@@ -162,17 +173,44 @@ def test_cli_publish_dry_run_prints_the_before_commands_and_a_manifest(
     assert not (repo / "release").exists()  # nothing written, nothing run
 
 
-# ---- bench deploy (rev 3) -----------------------------------------------------------------
+# ---- bench deploy (rev 3, gated by bench fetch --check since plan 4) ----------------------
 
 DEPLOY = "echo deployed {version} > done.txt"
 
 
-def _consumer(tmp_path: Path, deploy: str | None = DEPLOY, lock: str | None = "ndb=ndb-v1.0.0\n"
+def _bench_tree(repo: Path, producer: str = "ndb", tag: str = "ndb-v1.0.0",
+                files: dict[str, bytes] | None = None) -> str:
+    """Write .bench/<producer>/ the way `bench fetch` leaves it; return the manifest sha."""
+    files = {"results/scores.json": b"{}"} if files is None else files
+    m = Manifest(
+        tag=tag, created=CREATED, producer=producer,
+        hf=HfRef(repo=HF_REPO, revision="b" * 40), r2_prefix=f"{tag}/",
+        files=[
+            FileEntry(path=f"release/{tag}/{rel}", sha256=hashlib.sha256(d).hexdigest(),
+                      bytes=len(d))
+            for rel, d in sorted(files.items())
+        ],
+    )
+    data = dumps(m).encode()
+    prod = repo / ".bench" / producer
+    (prod / "manifest.json").parent.mkdir(parents=True, exist_ok=True)
+    (prod / "manifest.json").write_bytes(data)
+    for rel, d in sorted(files.items()):
+        p = prod / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(d)
+    return hashlib.sha256(data).hexdigest()
+
+
+def _consumer(tmp_path: Path, deploy: str | None = DEPLOY, lock: str | None = "ndb=ndb-v1.0.0"
               ) -> tuple[Path, Path]:
-    """A jubarte-app clone (optionally with bench.lock) and the BENCH_ROOT naming its deploy."""
+    """A jubarte-app clone with a pinned, fetched bench.lock and the BENCH_ROOT naming its deploy."""
     repo = _clone(tmp_path, name="jubarte-app")
     if lock is not None:
-        (repo / "bench.lock").write_text(lock)
+        sha = _bench_tree(repo)
+        (repo / "bench.lock").write_text(
+            f"ndb=ndb-v1.0.0 manifest={sha}\n" if lock else ""  # lock="" pins nothing
+        )
     root = tmp_path / "croot"
     root.mkdir(exist_ok=True)
     deploy_line = f'deploy = "{deploy}"\n' if deploy is not None else ""
@@ -191,8 +229,20 @@ def test_cli_deploy_without_yes_prints_the_command_and_runs_none(
     result = runner.invoke(app, ["deploy", "jubarte-app"])
     assert result.exit_code == 0, result.output
     assert "echo deployed ndb-v1.0.0 > done.txt" in result.output  # {version} substituted
-    assert "Plan 4" in result.output  # fetch verification is still pending
     assert not (repo / "done.txt").exists()  # printed, not run
+
+
+def test_cli_deploy_refuses_when_the_fetch_check_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Plan 4: deploy proves .bench against bench.lock first; a mismatch refuses it."""
+    repo, root = _consumer(tmp_path)
+    (repo / ".bench/ndb/results/scores.json").write_bytes(b"tampered")
+    monkeypatch.setenv("BENCH_ROOT", str(root))
+    result = runner.invoke(app, ["deploy", "jubarte-app", "--yes"])
+    assert result.exit_code == 1, result.output
+    assert "scores.json" in result.output  # the mismatch is named
+    assert not (repo / "done.txt").exists()  # the deploy command never ran
 
 
 def test_cli_deploy_with_yes_runs_the_command_in_the_consumer_checkout(
@@ -215,7 +265,12 @@ def test_cli_deploy_propagates_a_nonzero_exit(tmp_path: Path,
 
 def test_cli_deploy_substitutes_the_first_producers_tag(tmp_path: Path,
                                                         monkeypatch: pytest.MonkeyPatch) -> None:
-    _repo, root = _consumer(tmp_path, lock="et=et-v2.0.0\nndb=ndb-v1.0.0\n")
+    _repo, root = _consumer(tmp_path)
+    # two pinned producers, both fetched; the lock's first line wins {version}
+    sha_et = _bench_tree(_repo, producer="et", tag="et-v2.0.0")
+    lock = _repo / "bench.lock"
+    sha_ndb = hashlib.sha256((lock.parent / ".bench/ndb/manifest.json").read_bytes()).hexdigest()
+    lock.write_text(f"et=et-v2.0.0 manifest={sha_et}\nndb=ndb-v1.0.0 manifest={sha_ndb}\n")
     monkeypatch.setenv("BENCH_ROOT", str(root))
     result = runner.invoke(app, ["deploy", "jubarte-app"])
     assert result.exit_code == 0, result.output
