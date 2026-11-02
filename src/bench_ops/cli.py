@@ -49,8 +49,8 @@ def _install_hooks(repo: Path) -> str:
     dump = subprocess.run(["lefthook", "dump"], cwd=repo, check=False, capture_output=True,
                           text=True).stdout
     if "size guard" not in dump:
-        return (f"{INACTIVE}: shared config not fetched; rerun "
-                "`lefthook install` online")
+        return (f"{INACTIVE}: this checkout's lefthook.yml pulls no shared jobs (branch without "
+                "the bench-ops remote, or the remote could not be fetched)")
     return "hooks installed"
 
 
