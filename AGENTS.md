@@ -65,17 +65,17 @@ Today these steps are run by hand in each repo; the bench-ops plans turn the mar
 | A3 | Accept a new baseline when the drop is understood | `uv run bench accept-scores <tool>` | | |
 | A4 | Regenerate the pages | `uv run bench report`; check with `uv run bench report --check` | `RESULTS.md`, `RESULTS_DETAILED.md`, README vendor table current; headline tables read | `scores.json` emitted too (Plan 2) |
 | A5 | Commit the records | stores, registry, the three pages, any frozen `RESULTS_v<old>.md`; never `out/` or corpus files (the size guard refuses binaries) | PR merged on ndb `main` | |
-| A6 | Publish heavy outputs | page images/fixtures: `uv run --with httpx python scripts/publish/upload_r2.py <dir> <prefix> [--via-worker https://ndb-r2-upload.cicero-im.workers.dev]`, then `--verify`; run outputs to HF in batches (320 commits/h limit) | every file on R2/HF with the same size; only then delete local copies | `bench publish ndb <tag>` (Plan 2) |
+| A6 | Publish heavy outputs | page images/fixtures: `uv run --with httpx python scripts/publish/upload_r2.py <dir> <prefix> [--via-worker https://ndb-r2-upload.cicero-im.workers.dev]`, then `--verify`; run outputs to HF in batches (320 commits/h limit) | every file on R2/HF with the same size; only then delete local copies | `bench publish ndb <tag>` (Plan 2 rev 3: runs `bench report --check` and `bench results upload` first, then uploads the bundle) |
 | A7 | Renew the review site (when cases change) | `cd site && git pull --ff-only`, patch the viewer data (reference: `site/_build/site_1011/{process.py,patch_site.py}`), commit, `git push origin gh-pages` | https://jandira-tech.github.io/neurotic_docx_bench/ shows the new cases (check in a real browser) | built from bench-viewer (Plan 3) |
 
 ### B. A new jubarte engine release (in `jubarte-redlines`, then `jubarte-app`)
 
-| # | Step | Command | Done when |
-|---|---|---|---|
-| B1 | Release the engine | `scripts/release.sh X.Y.Z --changelog-summary … --crates-summary … --npm-summary … --pypi-summary … --github-summary … --how-readme-and-other-docs-were-updated …` (all required) | GitHub release, crates, npm, PyPI out; `release_info/website_data_X.Y.Z_<stamp>.jsonl` written. Its last step runs the app's `scripts/release-engine.sh` |
-| B2 | Move the release onto jubarte.pro | in `jubarte-app/jubarte-site`: `scripts/release.sh release X.Y.Z --no-deploy` (`engine` then `figures`: version, changelog, demo pin, sample benchmark tables via `sync-bench.ts`, proved by `check-bench.ts`) | `pnpm bench:check` exits 0; `data/facts.jsonl` changed only in proved keys |
-| B3 | Full-corpus figures (after A has scored X.Y.Z on the full corpus) | move the full-corpus `bench.*` facts with `uv run scripts/facts.py merge FILE`, then `scripts/release.sh bench X.Y.Z [--redline-tool jubarte-X.Y.Z] --no-deploy` (proves tables against the new `RESULTS.md`, restages Cases fixtures, uploads them to HF, renders, pins `fixtures.lock`) | `pnpm bench:check` exits 0 |
-| B4 | Commit and deploy | commit to `main`, then `scripts/release.sh deploy X.Y.Z` (refuses uncommitted changes, proves again, `wrangler deploy`, checks the live page) | https://jubarte.pro/benchmark shows X.Y.Z (check in a real browser) |
+| # | Step | Command | Done when | Later |
+|---|---|---|---|---|
+| B1 | Release the engine | `scripts/release.sh X.Y.Z --changelog-summary … --crates-summary … --npm-summary … --pypi-summary … --github-summary … --how-readme-and-other-docs-were-updated …` (all required) | GitHub release, crates, npm, PyPI out; `release_info/website_data_X.Y.Z_<stamp>.jsonl` written. Its last step runs the app's `scripts/release-engine.sh` | |
+| B2 | Move the release onto jubarte.pro | in `jubarte-app/jubarte-site`: `scripts/release.sh release X.Y.Z --no-deploy` (`engine` then `figures`: version, changelog, demo pin, sample benchmark tables via `sync-bench.ts`, proved by `check-bench.ts`) | `pnpm bench:check` exits 0; `data/facts.jsonl` changed only in proved keys | |
+| B3 | Full-corpus figures (after A has scored X.Y.Z on the full corpus) | move the full-corpus `bench.*` facts with `uv run scripts/facts.py merge FILE`, then `scripts/release.sh bench X.Y.Z [--redline-tool jubarte-X.Y.Z] --no-deploy` (proves tables against the new `RESULTS.md`, restages Cases fixtures, uploads them to HF, renders, pins `fixtures.lock`) | `pnpm bench:check` exits 0 | |
+| B4 | Commit and deploy | commit to `main`, then `scripts/release.sh deploy X.Y.Z` (refuses uncommitted changes, proves again, `wrangler deploy`, checks the live page) | https://jubarte.pro/benchmark shows X.Y.Z (check in a real browser) | `bench deploy jubarte-app` (Plan 2 rev 3: checks `bench.lock`, `{version}` from its first producer; fetch verification pending Plan 4) |
 
 Later (Plan 4): `fixtures.lock` becomes `bench.lock`, `bench fetch` pulls the tagged `scores.json`, and the page renders through `@jandira-tech/bench-viewer`.
 
@@ -83,15 +83,15 @@ Later (Plan 4): `fixtures.lock` becomes `bench.lock`, `bench fetch` pulls the ta
 
 Follow `editors_trial/RELEASING.md` top to bottom and tick it in the release's tracking issue. The parts that must not be skipped:
 
-| # | Step | Command | Done when |
-|---|---|---|---|
-| C1 | Pins, quiet machine, measurements (each changed result twice) | RELEASING.md §1–3 | measurements reproduced |
-| C2 | Facts and reports | `python3 build/facts.py`; `python3 build/render_reports.py --stale out/facts-v<previous>.json`; `--all-twins`; `--check`; copy `out/facts.json` to `out/facts-vX.Y.Z.json` | every sentence about a moved fact re-read; nothing typed by hand |
-| C3 | Demos whose pin moved | `build/rebuild_demo.sh <slug>` | each demo opened in a real browser |
-| C4 | Gate | `python3 -m unittest discover -s build -p "test_*.py"`; `build/verify_publication.sh --with-word` **twice** | no `WRONG-DOCUMENT`/`ORACLE-NOT-CLEAN`; every `.docx` Word valid |
-| C5 | Publish the trial | CHANGELOG section, PR to `main`, merge, tag `vX.Y.Z`, GitHub release | |
-| C6 | Publish the site | in `benchmarks-law` on up-to-date `main`: `pnpm sync:content`, `pnpm sync:vendors`, `pnpm sync:assets`, `pnpm sync:demos` (if a demo was rebuilt), `pnpm run deploy` (needs `EMDASH_TOKEN`; `REPORTS_ROOT` defaults to `../../editors_trial`) | https://benchmarks.law home, `/editors-trial/`, vendors, every report and demo checked in a real browser |
-| C7 | Close out | commit the site, PR, merge, tag with the same version; close the issues | |
+| # | Step | Command | Done when | Later |
+|---|---|---|---|---|
+| C1 | Pins, quiet machine, measurements (each changed result twice) | RELEASING.md §1–3 | measurements reproduced | |
+| C2 | Facts and reports | `python3 build/facts.py`; `python3 build/render_reports.py --stale out/facts-v<previous>.json`; `--all-twins`; `--check`; copy `out/facts.json` to `out/facts-vX.Y.Z.json` | every sentence about a moved fact re-read; nothing typed by hand | |
+| C3 | Demos whose pin moved | `build/rebuild_demo.sh <slug>` | each demo opened in a real browser | |
+| C4 | Gate | `python3 -m unittest discover -s build -p "test_*.py"`; `build/verify_publication.sh --with-word` **twice** | no `WRONG-DOCUMENT`/`ORACLE-NOT-CLEAN`; every `.docx` Word valid | |
+| C5 | Publish the trial | CHANGELOG section, PR to `main`, merge, tag `vX.Y.Z`, GitHub release | | |
+| C6 | Publish the site | in `benchmarks-law` on up-to-date `main`: `pnpm sync:content`, `pnpm sync:vendors`, `pnpm sync:assets`, `pnpm sync:demos` (if a demo was rebuilt), `pnpm run deploy` (needs `EMDASH_TOKEN`; `REPORTS_ROOT` defaults to `../../editors_trial`) | https://benchmarks.law home, `/editors-trial/`, vendors, every report and demo checked in a real browser | `bench deploy benchmarks-law` (Plan 2 rev 3) |
+| C7 | Close out | commit the site, PR, merge, tag with the same version; close the issues | | |
 
 Later (Plans 5–6): `bench publish et <tag>` replaces the publishing half of C, and benchmarks.law renders ndb numbers from the tagged `scores.json` instead of patching a copied viewer.
 

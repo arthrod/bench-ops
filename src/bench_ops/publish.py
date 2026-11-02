@@ -2,6 +2,8 @@
 
 One state machine, each step verified before the next (plan 2):
 
+0. run the producer's own `before` scripts in its checkout, stopping at the first failure
+   (rev 3: bench-ops reimplements nothing the producer's tooling already does);
 1. refuse a tag that already exists — on the Hub (the authority), in the local ledger, or as a
    local git tag;
 2. stage: expand the `files` globs inside the repo; refuse symlinks, paths escaping the repo,
@@ -26,6 +28,7 @@ from __future__ import annotations
 import os
 import subprocess
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -33,7 +36,7 @@ from typing import Protocol
 
 from pydantic import ValidationError
 
-from bench_ops.config import Repo
+from bench_ops.config import ReleaseSpec, Repo
 from bench_ops.gitx import git
 from bench_ops.hf import HubApi, sha256_of, verify_manifest
 from bench_ops.ledger import check_ledger
@@ -52,6 +55,15 @@ MAX_BYTES_PER_COMMIT = 400_000_000
 
 class PublishError(Exception):
     """A publish was refused: nothing was written that the step before had not verified."""
+
+
+def run_script(command: str, cwd: Path) -> int:
+    """Run one of the producer's own scripts: shell, inherited env, output streamed (rev 3).
+
+    Returns the exit code instead of raising: publish decides what a failure means, and the
+    runner is injected so tests can watch the commands without a shell.
+    """
+    return subprocess.run(command, shell=True, cwd=str(cwd), check=False).returncode
 
 
 @dataclass(frozen=True)
@@ -156,7 +168,28 @@ def _refuse_used_tag(root: Path, ledger: Path, tag: str) -> None:
         pass  # no commits yet: there are no tags
 
 
-def publish(repo: Repo, tag: Tag, hub: Hub, now: datetime, dry_run: bool) -> Manifest:
+def _run_before(spec: ReleaseSpec, repo_root: Path, dry_run: bool,
+                run: Callable[[str, Path], int]) -> None:
+    """Step 0 (rev 3): the producer's own scripts, in its checkout, before any hub call.
+
+    dry_run prints the commands and runs none; a real run stops at the first nonzero exit.
+    """
+    for command in spec.before:
+        print(f"before: {command}")
+        if dry_run:
+            continue
+        if run(command, repo_root) != 0:
+            raise PublishError(f"before command failed: {command}")
+
+
+def publish(
+    repo: Repo,
+    tag: Tag,
+    hub: Hub,
+    now: datetime,
+    dry_run: bool,
+    run: Callable[[str, Path], int] = run_script,
+) -> Manifest:
     """Run the state machine; returns the manifest as committed (`hf.revision` is R1)."""
     spec = repo.release
     if spec is None:
@@ -167,6 +200,8 @@ def publish(repo: Repo, tag: Tag, hub: Hub, now: datetime, dry_run: bool) -> Man
     root = repo.local_path
     ledger = root / "release" / "index.jsonl"
     _refuse_used_tag(root, ledger, tag)
+
+    _run_before(spec, root, dry_run, run)
 
     if not dry_run and hub.exists(spec.hf_repo, f"release/{tag}/manifest.json"):
         raise PublishError(

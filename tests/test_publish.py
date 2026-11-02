@@ -46,7 +46,8 @@ def _producer(tmp_path: Path, files: dict[str, bytes] | None = None) -> Path:
     return root
 
 
-def _repo(root: Path, files: tuple[str, ...] = ("out/**",), served: tuple[str, ...] = ()) -> config.Repo:
+def _repo(root: Path, files: tuple[str, ...] = ("out/**",), served: tuple[str, ...] = (),
+          before: tuple[str, ...] = ()) -> config.Repo:
     return config.Repo(
         name="ndb",
         url=str(root),
@@ -54,7 +55,7 @@ def _repo(root: Path, files: tuple[str, ...] = ("out/**",), served: tuple[str, .
         role="producer",
         path=root,
         release=config.ReleaseSpec(
-            hf_repo=HF_REPO, files=list(files), served=list(served)
+            hf_repo=HF_REPO, files=list(files), served=list(served), before=list(before)
         ),
     )
 
@@ -301,6 +302,90 @@ def test_publish_aborts_before_the_manifest_when_the_witness_fails(tmp_path: Pat
     assert not any(f"release/{TAG}/manifest.json" in t for t in hub.commits.values())
     assert not (root / "release" / "index.jsonl").exists()
     assert git(root, "tag").strip() == ""
+
+
+# ---- the producer's own scripts run first (rev 3) ---------------------------------------
+
+
+def test_publish_runs_before_commands_in_the_producer_checkout_before_any_hub_call(
+    tmp_path: Path,
+) -> None:
+    root = _producer(tmp_path)
+    hub = FakeHub(tmp_path)
+    cwds: list[Path] = []
+
+    def run(command: str, cwd: Path) -> int:
+        hub.calls.append(f"before:{command}")  # one log, so the order is provable
+        cwds.append(cwd)
+        return 0
+
+    publish(
+        _repo(root, before=("uv run bench report --check", "uv run bench results upload")),
+        TAG, hub, now=CREATED, dry_run=False, run=run,
+    )
+    assert hub.calls[:2] == [
+        "before:uv run bench report --check",
+        "before:uv run bench results upload",
+    ]
+    assert hub.calls[2].startswith("exists:")  # the scripts ran before any hub call
+    assert cwds == [root, root]
+
+
+def test_publish_stops_at_the_first_failing_before_command(tmp_path: Path) -> None:
+    root = _producer(tmp_path)
+    hub = FakeHub(tmp_path)
+    ran: list[str] = []
+
+    def run(command: str, cwd: Path) -> int:
+        ran.append(command)
+        return 1 if command.endswith("--check") else 0
+
+    with pytest.raises(PublishError, match="report --check"):
+        publish(
+            _repo(root, before=("uv run bench report --check", "uv run bench results upload")),
+            TAG, hub, now=CREATED, dry_run=False, run=run,
+        )
+    assert ran == ["uv run bench report --check"]  # the second command never ran
+    assert hub.calls == []  # nothing reached the hub
+    assert not (root / "release").exists()
+    assert git(root, "tag").strip() == ""
+
+
+def test_publish_dry_run_prints_the_before_commands_and_runs_none(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = _producer(tmp_path)
+    hub = FakeHub(tmp_path)
+    ran: list[str] = []
+
+    def run(command: str, cwd: Path) -> int:
+        ran.append(command)
+        return 0
+
+    m = publish(
+        _repo(root, before=("uv run bench report --check", "uv run bench results upload")),
+        TAG, hub, now=CREATED, dry_run=True, run=run,
+    )
+    assert ran == []  # printed, never run
+    out = capsys.readouterr().out
+    assert "uv run bench report --check" in out
+    assert "uv run bench results upload" in out
+    assert m.hf.revision == "0" * 40  # still steps 1 (local) and 2 only
+    assert hub.calls == []
+    assert not (root / "release").exists()
+
+
+def test_run_script_runs_a_shell_command_in_cwd_and_returns_its_exit_code(
+    tmp_path: Path,
+) -> None:
+    import shlex
+
+    from bench_ops.publish import run_script
+
+    marker = tmp_path / "marker.txt"
+    assert run_script(f"echo hi > {shlex.quote(str(marker))}", tmp_path) == 0
+    assert marker.read_text().strip() == "hi"
+    assert run_script("exit 3", tmp_path) == 3  # reported, not raised: publish decides
 
 
 # ---- append_ledger -----------------------------------------------------------------------

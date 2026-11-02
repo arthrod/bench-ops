@@ -20,8 +20,8 @@ from bench_ops.gitx import clone_or_pull, git, origin_url
 from bench_ops.hf import HfHub, Witness, sha256_of, verify_manifest
 from bench_ops.hooks import secrets_command, size_guard
 from bench_ops.ledger import check_ledger
-from bench_ops.models import LedgerEntry, Manifest, dumps
-from bench_ops.publish import PublishError
+from bench_ops.models import LedgerEntry, Lock, Manifest, dumps
+from bench_ops.publish import PublishError, run_script
 from bench_ops.publish import publish as publish_release
 from bench_ops.status import latest_tags, report
 
@@ -172,8 +172,10 @@ def publish_cmd(
 ) -> None:
     """Upload a producer's release to Hugging Face, verify it, then ledger and tag it (plan 2).
 
-    Never pushes git: the ledger commit and the tag stay local until the printed push command
-    is run by hand.
+    Runs the producer's own `before` scripts (its [repos.release], rev 3) in its checkout
+    first — pages current, stores uploaded — stopping at the first failure; nothing here
+    repeats what they already do. Never pushes git: the ledger commit and the tag stay local
+    until the printed push command is run by hand.
     """
     cfg = _config()
     try:
@@ -193,6 +195,70 @@ def publish_cmd(
             f"push with: git -C {repo.local_path} push origin {repo.branch} && "
             f"git -C {repo.local_path} push origin {tag}"
         )
+
+
+@app.command("deploy")
+def deploy_cmd(
+    repo_name: Annotated[str, typer.Argument(help="Consumer name in repos.toml.")],
+    yes: Annotated[
+        bool, typer.Option(help="Actually run the deploy; without it bench only prints it.")
+    ] = False,
+) -> None:
+    """Run a consumer's deploy command with the version its bench.lock pins (plan 2 rev 3).
+
+    Consumer only: producers release with `bench publish`. Checks the lock first (`bench fetch
+    --check` verification is pending Plan 4), then substitutes {version} from the lock's tag of
+    its first producer. Deploys are outward-facing: without --yes the command is printed, not
+    run.
+    """
+    cfg = _config()
+    try:
+        repo = cfg.by_name(repo_name)
+    except KeyError:
+        known = ", ".join(r.name for r in cfg.repos)
+        console.print(f"[red]unknown repo {repo_name!r}; known: {known}[/]")
+        raise typer.Exit(1) from None
+    if repo.role != "consumer":
+        console.print(
+            f"[red]{repo.name} is a {repo.role}; bench deploy runs a consumer's site, "
+            "a producer releases with bench publish[/]"
+        )
+        raise typer.Exit(1) from None
+
+    lock_path = repo.local_path / "bench.lock"
+    if not lock_path.exists():
+        console.print(
+            f"[red]no bench.lock at {lock_path}; release against a producer first[/]"
+        )
+        raise typer.Exit(1) from None
+    console.print(
+        "[yellow]fetch verification is pending Plan 4; only checked that bench.lock exists[/]"
+    )
+    if repo.deploy is None:
+        console.print(f"[red]{repo.name} has no deploy command in repos.toml[/]")
+        raise typer.Exit(1) from None
+
+    command = repo.deploy
+    if "{version}" in command:
+        lock = Lock.parse(lock_path.read_text())
+        if not lock.tags:
+            console.print(
+                f"[red]{lock_path} pins no <producer>=<tag>; cannot substitute {{version}}[/]"
+            )
+            raise typer.Exit(1) from None
+        producer = next(iter(lock.tags))  # the lock's first producer, in file order
+        command = command.replace("{version}", lock.tags[producer])
+
+    if not yes:
+        console.print("[yellow]dry (no --yes): printing the deploy command, not running it[/]")
+        console.print(command, markup=False, highlight=False)
+        return
+    console.print(f"deploying {repo.name}:")
+    console.print(command, markup=False, highlight=False)
+    code = run_script(command, repo.local_path)
+    if code != 0:
+        console.print(f"[red]deploy exited {code}[/]")
+        raise typer.Exit(code)
 
 
 @app.command("gc")

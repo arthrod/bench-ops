@@ -135,3 +135,147 @@ def test_cli_gc_without_yes_deletes_nothing(tmp_path: Path,
     result = runner.invoke(app, ["gc", str(target)])
     assert result.exit_code == 0, result.output
     assert target.exists()
+
+
+# ---- bench publish --dry-run with before scripts (rev 3) ----------------------------------
+
+
+def test_cli_publish_dry_run_prints_the_before_commands_and_a_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _clone(tmp_path)
+    (repo / "out").mkdir()
+    (repo / "out" / "a.bin").write_bytes(b"aaa")
+    _sh(repo, "add", "out")
+    _sh(repo, "commit", "-qm", "out")
+    release = (
+        f'\n[repos.release]\nhf_repo = "{HF_REPO}"\nfiles = ["out/**"]\n'
+        'before = ["uv run bench report --check", "uv run bench results upload"]\n'
+    )
+    root = _config(tmp_path, repo, release)
+    monkeypatch.setenv("BENCH_ROOT", str(root))
+    result = runner.invoke(app, ["publish", "ndb", "ndb-v0.0.1", "--dry-run"])
+    assert result.exit_code == 0, result.output
+    assert "uv run bench report --check" in result.output
+    assert "uv run bench results upload" in result.output
+    assert "out/a.bin" in result.output  # the manifest
+    assert not (repo / "release").exists()  # nothing written, nothing run
+
+
+# ---- bench deploy (rev 3) -----------------------------------------------------------------
+
+DEPLOY = "echo deployed {version} > done.txt"
+
+
+def _consumer(tmp_path: Path, deploy: str | None = DEPLOY, lock: str | None = "ndb=ndb-v1.0.0\n"
+              ) -> tuple[Path, Path]:
+    """A jubarte-app clone (optionally with bench.lock) and the BENCH_ROOT naming its deploy."""
+    repo = _clone(tmp_path, name="jubarte-app")
+    if lock is not None:
+        (repo / "bench.lock").write_text(lock)
+    root = tmp_path / "croot"
+    root.mkdir(exist_ok=True)
+    deploy_line = f'deploy = "{deploy}"\n' if deploy is not None else ""
+    (root / "repos.toml").write_text(
+        f'[[repos]]\nname = "jubarte-app"\nurl = "x"\nbranch = "main"\n'
+        f'role = "consumer"\npath = "{repo}"\n{deploy_line}'
+    )
+    return repo, root
+
+
+def test_cli_deploy_without_yes_prints_the_command_and_runs_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, root = _consumer(tmp_path)
+    monkeypatch.setenv("BENCH_ROOT", str(root))
+    result = runner.invoke(app, ["deploy", "jubarte-app"])
+    assert result.exit_code == 0, result.output
+    assert "echo deployed ndb-v1.0.0 > done.txt" in result.output  # {version} substituted
+    assert "Plan 4" in result.output  # fetch verification is still pending
+    assert not (repo / "done.txt").exists()  # printed, not run
+
+
+def test_cli_deploy_with_yes_runs_the_command_in_the_consumer_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, root = _consumer(tmp_path)
+    monkeypatch.setenv("BENCH_ROOT", str(root))
+    result = runner.invoke(app, ["deploy", "jubarte-app", "--yes"])
+    assert result.exit_code == 0, result.output
+    assert (repo / "done.txt").read_text().strip() == "deployed ndb-v1.0.0"
+
+
+def test_cli_deploy_propagates_a_nonzero_exit(tmp_path: Path,
+                                              monkeypatch: pytest.MonkeyPatch) -> None:
+    _repo, root = _consumer(tmp_path, deploy="exit 7")
+    monkeypatch.setenv("BENCH_ROOT", str(root))
+    result = runner.invoke(app, ["deploy", "jubarte-app", "--yes"])
+    assert result.exit_code == 7, result.output
+
+
+def test_cli_deploy_substitutes_the_first_producers_tag(tmp_path: Path,
+                                                        monkeypatch: pytest.MonkeyPatch) -> None:
+    _repo, root = _consumer(tmp_path, lock="et=et-v2.0.0\nndb=ndb-v1.0.0\n")
+    monkeypatch.setenv("BENCH_ROOT", str(root))
+    result = runner.invoke(app, ["deploy", "jubarte-app"])
+    assert result.exit_code == 0, result.output
+    assert "deployed et-v2.0.0" in result.output  # the lock's first line wins
+
+
+def test_cli_deploy_runs_a_command_without_version_placeholder(tmp_path: Path,
+                                                               monkeypatch: pytest.MonkeyPatch) -> None:
+    repo, root = _consumer(tmp_path, deploy="echo plain > plain.txt")
+    monkeypatch.setenv("BENCH_ROOT", str(root))
+    result = runner.invoke(app, ["deploy", "jubarte-app", "--yes"])
+    assert result.exit_code == 0, result.output
+    assert (repo / "plain.txt").exists()
+
+
+def test_cli_deploy_refuses_a_producer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = _clone(tmp_path)
+    root = _config(tmp_path, repo)  # the default helper writes a producer
+    monkeypatch.setenv("BENCH_ROOT", str(root))
+    result = runner.invoke(app, ["deploy", "ndb"])
+    assert result.exit_code == 1, result.output
+    assert "producer" in result.output
+
+
+def test_cli_deploy_refuses_an_unknown_repo(tmp_path: Path,
+                                            monkeypatch: pytest.MonkeyPatch) -> None:
+    _repo, root = _consumer(tmp_path)
+    monkeypatch.setenv("BENCH_ROOT", str(root))
+    result = runner.invoke(app, ["deploy", "nope"])
+    assert result.exit_code == 1, result.output
+    assert "unknown repo" in result.output
+
+
+def test_cli_deploy_refuses_a_consumer_without_bench_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, root = _consumer(tmp_path, lock=None)
+    monkeypatch.setenv("BENCH_ROOT", str(root))
+    result = runner.invoke(app, ["deploy", "jubarte-app", "--yes"])
+    assert result.exit_code == 1, result.output
+    assert "bench.lock" in result.output
+    assert not (repo / "done.txt").exists()
+
+
+def test_cli_deploy_refuses_a_consumer_without_a_deploy_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _repo, root = _consumer(tmp_path, deploy=None)
+    monkeypatch.setenv("BENCH_ROOT", str(root))
+    result = runner.invoke(app, ["deploy", "jubarte-app"])
+    assert result.exit_code == 1, result.output
+    assert "deploy" in result.output
+
+
+def test_cli_deploy_refuses_version_substitution_when_the_lock_pins_no_producer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, root = _consumer(tmp_path, lock="")  # a bench.lock with no <producer>=<tag> line
+    monkeypatch.setenv("BENCH_ROOT", str(root))
+    result = runner.invoke(app, ["deploy", "jubarte-app", "--yes"])
+    assert result.exit_code == 1, result.output
+    assert "version" in result.output
+    assert not (repo / "done.txt").exists()
