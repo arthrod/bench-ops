@@ -4,6 +4,26 @@ Issues: arthrod/bench-ops#2 (publish), #3 (gc), #4 (ledger hook); ndb side: jand
 
 Revision 2 (2026-11-02) adopts the adversarial review in `docs/plans/reviews/plan2-review.md` (findings D1–D22).
 
+## Revision 3 (Arthur, 2026-11-02): reuse the scripts we have
+
+`bench` orchestrates each repo's existing scripts; it reimplements nothing they already do. Per producer, `[repos.release]` names the commands publish runs first, in the producer checkout, stopping at the first failure:
+
+```toml
+[repos.release]                       # ndb
+hf_repo = "arthrod/neurotic_docx_bench"
+before  = ["uv run bench report --check",          # pages current (existing)
+           "uv run bench results upload"]          # stores, pages, registry, oracle files to HF with hash read-back (existing hub.upload_results)
+files   = ["results/scores.json", "results/cases.json", "results/speed.json"]
+```
+
+- bench-ops' own publish then adds only what nothing else does: `release/<tag>/` (the small bundle), the manifest, the HF tag, the ledger line. Its witness (`verify_manifest`) stays, because it checks the bundle, not the stores.
+- Deleting ndb run outputs stays `uv run bench results upload --prune-local` (ndb deletes only after reading hashes back). `bench gc` is for what has no such path (satellites, Plan 6).
+- R2: when a producer serves files, publish runs `scripts/publish/upload_r2.py <dir> <prefix>` then `--verify`, extended there to compare sha256 (R2 `x-amz-checksum-sha256`) instead of sizes; no second R2 client in bench-ops.
+- Corpus: `uv run bench fixtures upload/download` (MANIFEST.sha256.json) stays the corpus path; nothing in bench-ops touches the corpus.
+- Engine evidence: `jubarte-redlines/scripts/check_release_info.py` stays the engine gate; ndb's copy of the six files is checked by the same script (`--bench-root`).
+- `bench status`'s witness and `--fail-on-stale` call these same pieces; BROKEN means the bundle on HF disagrees with the ledger.
+- Consumers get `deploy` in their repos.toml entry (jubarte-app: `cd jubarte-site && scripts/release.sh deploy {version}`; benchmarks-law: `pnpm run deploy`); `bench deploy <repo>` = `bench fetch --check` + that command.
+
 ## Decisions
 
 - **The Hub is the only authority.** Every check that gates something (publish refusing a tag, gc allowing a delete) asks Hugging Face, never a local file. Local ledger lines and git tags are conveniences.

@@ -6,6 +6,8 @@ Issue: arthrod/benchmarks-law#72. Depends on Plan 2 (ndb release), Plan 3 (bench
 
 The case browser, speed page and leaderboard all render from the ndb release bundle through bench-viewer (Plan 3b), so `public/neurotic-docx-bench/` (the 22 MB copy, `patchNeuroticHtml`) is deleted outright, not moved to `/cases/`. Page images stay on R2 as today (the bundle lists their URLs). `bench deploy blaw` is restored: `bench fetch --check`, then `pnpm run deploy`.
 
+Before the copied viewer is deleted, both versions run locally side by side for Arthur: the current `main` (old copied viewer) and the branch (bundle-rendered), each with `pnpm dev` (or `wrangler dev`) on its own port, same pages listed, so he compares them in a browser and approves the deletion. gh-pages force-push: approved by Arthur (2026-11-02) once `build:pages` output has been shown the same way.
+
 The sections below are revision 1; where they disagree with this paragraph, this paragraph wins.
 
 ## What the survey found (revision 1)
