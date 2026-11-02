@@ -2,6 +2,14 @@
 
 Issue: arthrod/benchmarks-law#72. Depends on Plan 2 (ndb release), Plan 3 (bench-viewer), Plan 6 (et release). Tracking: arthrod/bench-ops#8.
 
+## Revision 3 (Arthur, 2026-11-02): benchmarks.law shows scores, not a product pitch
+
+The arthur-law page must not reuse jubarte.pro's content. Same `scores.json`, different layout, built by a bench-viewer page builder `buildLeaderboardPage` (jubarte keeps its own):
+- per task, a ranked leaderboard (rank, tool, version, median, mean, docs, failed) with the leader called out; full-corpus tables first, the 600-document samples after them;
+- no product headlines (`headlines` is not rendered), no `ours` highlighting or †;
+- corpus states and provenance kept; the fixture version badge stays.
+A test asserts the built arthur-law page contains no headline text and no `ours` marker, and contains every table id in `scores.json`.
+
 ## Revision 2 (Arthur, 2026-11-02)
 
 The case browser, speed page and leaderboard all render from the ndb release bundle through bench-viewer (Plan 3b), so `public/neurotic-docx-bench/` (the 22 MB copy, `patchNeuroticHtml`) is deleted outright, not moved to `/cases/`. Page images stay on R2 as today (the bundle lists their URLs). `bench deploy blaw` is restored: `bench fetch --check`, then `pnpm run deploy`.
