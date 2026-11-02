@@ -4,9 +4,18 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from typing import Annotated
+from itertools import pairwise
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 Sha256 = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
 GitSha = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{40}$")]
@@ -181,7 +190,269 @@ class Scores(Strict):
     method: list[MethodPoint]
 
 
+# ---- cases: the per-case browsers (conversion + redline), sharded one file per group ----------
+# Plan 3b: `cases/index.json` (CasesIndex) points at `cases/<kind>/<group>.json` shards
+# (CaseShard). Page WebPs and shown-page PDFs stay on R2: Case carries paths relative to
+# CasesIndex.assets_base (~/ sentinel, as in the published data), never bytes or absolute URLs.
+
+MetricName = Literal["pixel", "jaccard", "ssim", "text_boundary"]
+MetricValue = Annotated[float, Field(ge=0, le=100.000001)]  # epsilon: upstream pixel hits 100.00000000000003
+PageCount = Annotated[int, Field(ge=0)]  # zero is a failed candidate
+_Char = r"[A-Za-z0-9_~-]"  # a segment character that is not a dot
+_Any = r"[A-Za-z0-9._~-]"
+# Any segment except exactly "." and ".." (path traversal), look-around-free for pydantic-core:
+# "..x" or ".x" or any segment starting with a non-dot.
+_Segment = rf"(?:\.\.{_Any}+|\.{_Char}{_Any}*|{_Char}{_Any}*)"
+AssetPath = Annotated[
+    str, StringConstraints(pattern=rf"^~/(?:{_Segment}/)*{_Segment}$")
+]  # ~/x/y.webp: relative to assets_base, no scheme, no traversal
+ShardPath = Annotated[
+    str, StringConstraints(pattern=rf"^(?:{_Segment}/)*{_Segment}\.json$")
+]  # release-file path such as cases/conversion/v1_clean.json
+
+
+class Engine(Strict):
+    key: str  # engine/pin lane key, including "reference" and superseded pins
+    label: str  # display label
+
+
+class MetricDiagnostics(Strict):
+    ref_pages: int = Field(ge=0)
+    pages: int = Field(ge=0)
+    scored_pages: int = Field(ge=0)
+    max_break_drift: int  # signed, not a distance: observed -11916..9310
+
+
+class Case(Strict):
+    kind: Literal["conversion", "redline"]  # source page; never inferred from group spelling
+    group: str  # composite identity: group
+    case: str  # composite identity: case
+    pages: dict[str, list[AssetPath | None]]  # engine -> shown WebPs; null is a deliberate gap
+    page_counts: dict[str, PageCount]  # engine -> whole-document pages (not shown-page count)
+    scores: dict[str, dict[MetricName, MetricValue | None]]  # null = metric not computable
+    times: dict[str, float]  # engine -> wall-clock seconds
+    versions: dict[str, str]  # engine -> per-case pin/version label (dropped lanes too)
+    dropped: list[str]  # engine keys hidden for this case
+    reference_app: str  # Word/Quartz producer note
+    pdfs: dict[str, AssetPath] = Field(default_factory=dict)  # engine -> shown-pages PDF
+    errors: dict[str, str] = Field(default_factory=dict)  # engine -> failure explanation
+    metric_diagnostics: dict[str, MetricDiagnostics] = Field(default_factory=dict)
+    shown: list[int] | None = None  # page numbers represented by pages[]; None = legacy convention
+    stem: str | None = None  # corpus/source document identity
+    lang: str | None = None
+    type: str | None = None  # document category
+    set: str | None = None  # cohort/source-set label
+    sets: str | None = None  # semicolon-separated source-set labels
+    state: str | None = None  # corpus document state
+    pair: str | None = None  # comparison identity where meaningful
+    not_applicable: list[str] = Field(default_factory=list)  # engines excluded for cause
+    unavailable: list[str] = Field(default_factory=list)  # cohort lanes with no published measurement
+
+    @model_validator(mode="after")
+    def _check_case(self) -> Case:
+        active = (
+            self.pages.keys()
+            | self.page_counts.keys()
+            | self.scores.keys()
+            | self.times.keys()
+            | self.pdfs.keys()
+            | self.metric_diagnostics.keys()
+        )
+        clash = sorted(set(self.dropped) & active)
+        if clash:
+            raise ValueError(f"dropped engines still active in this case: {clash}")
+        orphaned = sorted(
+            set(self.errors) - self.scores.keys() - set(self.dropped) - set(self.unavailable)
+        )
+        if orphaned:
+            raise ValueError(
+                f"engines with errors but no scores entry (and not dropped/unavailable): {orphaned}"
+            )
+        if self.shown is not None:
+            pages_ = list(self.shown)
+            if any(p < 1 for p in pages_) or any(b <= a for a, b in pairwise(pages_)):
+                raise ValueError("shown must be strictly increasing 1-based page numbers")
+            wrong = sorted(e for e, lst in self.pages.items() if lst and len(lst) != len(pages_))
+            if wrong:
+                raise ValueError(f"shown has {len(pages_)} entries but page lists differ: {wrong}")
+        return self
+
+
+class CaseShard(Strict):
+    """One group's file: cases/<kind>/<group>.json."""
+
+    kind: Literal["conversion", "redline"]
+    group: str
+    cases: list[Case]
+
+    @model_validator(mode="after")
+    def _check_shard(self) -> CaseShard:
+        stray = [c.case for c in self.cases if c.kind != self.kind or c.group != self.group]
+        if stray:
+            raise ValueError(f"shard {self.kind}/{self.group} holds foreign cases: {stray[:5]}")
+        seen: set[str] = set()
+        dupes: set[str] = set()
+        for c in self.cases:
+            (dupes if c.case in seen else seen).add(c.case)
+        if dupes:
+            raise ValueError(f"duplicate case ids in shard {self.kind}/{self.group}: {sorted(dupes)}")
+        return self
+
+
+class ShardRef(Strict):
+    """One index entry pointing at a shard file."""
+
+    kind: Literal["conversion", "redline"]
+    group: str
+    count: int = Field(ge=0)
+    path: ShardPath
+
+
+class CasesIndex(Strict):
+    """cases/index.json: the shard directory, the engine list and the public asset base."""
+
+    version: str  # contract schema version; the release tag stays in the Manifest
+    generated: datetime
+    repo: str  # producer repository identity
+    assets_base: str  # public HTTPS R2 base URL the ~/ paths resolve against
+    engines: list[Engine]  # ordered; covers every key used in any case map
+    groups: list[ShardRef]
+
+    @field_validator("assets_base")
+    @classmethod
+    def _https_directory(cls, v: str) -> str:
+        if not (v.startswith("https://") and v.endswith("/") and v[len("https://") : -1]):
+            raise ValueError("assets_base must be an absolute https:// URL ending in /")
+        return v
+
+    @model_validator(mode="after")
+    def _unique(self) -> CasesIndex:
+        keys = [e.key for e in self.engines]
+        dupes = {k for k in keys if keys.count(k) > 1}
+        if dupes:
+            raise ValueError(f"duplicate engine keys: {sorted(dupes)}")
+        refs = [(g.kind, g.group) for g in self.groups]
+        gdupes = {r for r in refs if refs.count(r) > 1}
+        if gdupes:
+            raise ValueError(f"duplicate groups: {sorted(gdupes)}")
+        return self
+
+    def validate_shard(self, shard: CaseShard) -> CaseShard:
+        """Cross-check a shard against the index before release: registration, count, engine keys."""
+        entry = next(
+            (g for g in self.groups if g.kind == shard.kind and g.group == shard.group), None
+        )
+        if entry is None:
+            raise ValueError(f"shard {shard.kind}/{shard.group} is not registered in the index")
+        if entry.count != len(shard.cases):
+            raise ValueError(
+                f"index counts {entry.count} cases for {shard.kind}/{shard.group}, "
+                f"shard holds {len(shard.cases)}"
+            )
+        known = {e.key for e in self.engines}
+        unknown: set[str] = set()
+        for c in shard.cases:
+            for m in (
+                c.pages, c.page_counts, c.scores, c.times, c.versions,
+                c.pdfs, c.errors, c.metric_diagnostics,
+            ):
+                unknown |= m.keys() - known
+            unknown |= (set(c.dropped) | set(c.not_applicable) | set(c.unavailable)) - known
+        if unknown:
+            raise ValueError(f"engine keys missing from the index engines: {sorted(unknown)}")
+        return shard
+
+
+# ---- speed.json: the 10,000-input speed page (not the RESULTS.md leaderboard) ----------------
+
+
+class SpeedCoverage(Strict):
+    tool: str
+    completed: int = Field(ge=0)
+    planned: int = Field(ge=0)
+
+
+class SpeedRow(Strict):
+    tool: str
+    bucket: str  # pairs / category / quartile bucket
+    n: int = Field(ge=0)
+    ok: int = Field(ge=0)
+    failed: int = Field(ge=0)
+    median_ms: float | None = None  # None when all calls failed
+    mean_ms: float | None = None
+    p95_ms: float | None = None
+    p99_ms: float | None = None
+    max_ms: float | None = None
+    ok_total_s: float | None = None
+
+
+class SpeedTable(Strict):
+    id: str  # common / category / quartile
+    title: str
+    bucket_header: str  # the bucket column's label
+    rows: list[SpeedRow]
+
+
+class SpeedNote(Strict):
+    heading: str
+    paragraphs: list[str] = Field(default_factory=list)
+    bullets: list[str] = Field(default_factory=list)
+
+    @field_validator("heading", "paragraphs", "bullets")
+    @classmethod
+    def _plain_text(cls, v: str | list[str]) -> str | list[str]:
+        texts = [v] if isinstance(v, str) else v
+        if any("<" in t for t in texts):
+            raise ValueError("speed notes are plain text; markup is not allowed")
+        return v
+
+
+class SpeedTask(Strict):
+    id: str  # redlines / pdf
+    title: str
+    description: str
+    available: bool = True  # False renders as "Not measured yet."
+    planned: int | None = None
+    timeout_ms: int | None = None
+    quartile_cuts_bytes: list[int] = Field(default_factory=list)
+    coverage: list[SpeedCoverage] = Field(default_factory=list)
+    tables: list[SpeedTable] = Field(default_factory=list)
+    notes: list[SpeedNote] = Field(default_factory=list)
+
+
+class Speed(Strict):
+    version: str
+    generated: datetime
+    repo: str
+    title: str
+    intro: str
+    tasks: list[SpeedTask]  # in render order
+
+
 def dumps(model: BaseModel) -> str:
     """Canonical JSON: sorted keys, 2-space indent, trailing newline. Hash this text."""
     data = model.model_dump(mode="json")
     return json.dumps(data, sort_keys=True, indent=2, ensure_ascii=False) + "\n"
+
+
+def dumps_compact(model: BaseModel) -> str:
+    """Compact release JSON: sorted keys, no whitespace (case shards, speed.json).
+
+    ``exclude_none`` is applied to optional model metadata only: a None-valued field is
+    dropped, but nulls inside ``scores`` dicts and ``pages`` lists are data and are kept.
+    """
+    return json.dumps(
+        _compact(model), sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+    )
+
+
+def _compact(value: object) -> object:
+    if isinstance(value, BaseModel):
+        return {name: _compact(v) for name, v in value if v is not None}
+    if isinstance(value, dict):
+        return {k: _compact(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_compact(v) for v in value]
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return value
