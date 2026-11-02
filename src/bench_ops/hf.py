@@ -29,6 +29,10 @@ class WriteApi(HubApi, Protocol):
         """Whether the dataset exists at all: publishing never creates repos (plan 6 A)."""
         ...
 
+    def repo_is_private(self, repo: str) -> bool:
+        """The dataset's visibility (H2): checked, never assumed, before anything is written."""
+        ...
+
     def exists(self, repo: str, path: str, revision: str = "main") -> bool: ...
 
     def commit(self, repo: str, files: dict[str, Path], message: str) -> str:
@@ -78,6 +82,9 @@ class HfHub:
 
     def repo_exists(self, repo: str) -> bool:
         return self.api.repo_exists(repo, repo_type="dataset")
+
+    def repo_is_private(self, repo: str) -> bool:
+        return bool(self.api.repo_info(repo, repo_type="dataset").private)
 
     def exists(self, repo: str, path: str, revision: str = "main") -> bool:
         return self.api.file_exists(repo, path, revision=revision, repo_type="dataset")

@@ -21,14 +21,19 @@ class ReleaseSpec(BaseModel):
 
     `served` must stay empty until the R2 mirror has a content witness (review D2/D3/D11–D13):
     publish refuses a non-empty list, so the field exists only to make that refusal explicit.
+
+    `private` (plan 6, H2): the visibility the dataset must have. Checked against the Hub
+    before anything is written — fail closed, so the default is private: a spec that does
+    not say must be the safer one (ndb's public record dataset says `private = false`).
     """
 
     model_config = ConfigDict(extra="forbid")
 
     hf_repo: str
-    files: list[str]  # globs, repo-relative
+    files: list[str]  # globs, repo-relative; a "?"-prefixed glob may match nothing (M1)
     before: list[str] = []  # run by publish, in order, before any hub call
     served: list[str] = []
+    private: bool = True  # the dataset's required visibility, checked before any upload (H2)
 
 
 class Repo(BaseModel):

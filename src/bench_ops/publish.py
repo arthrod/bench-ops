@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import subprocess
 import tempfile
 from collections.abc import Callable
@@ -95,15 +96,22 @@ def stage(repo_root: Path, globs: list[str]) -> list[StagedFile]:
     The bundle lands on a public dataset, so staging fails closed: symlinks, paths outside
     the repo, dot-paths and the release tree abort the whole publish (a surprise here is a
     leak, not a false negative). Directories and other non-regular files (a FIFO would
-    block the read forever, N1) are skipped.
+    block the read forever, N1) are skipped. Every glob must match at least one file (M1):
+    a release bundle is a contract, not a best effort — prefix a glob with "?" to make it
+    optional (reports/figures may legitimately be absent in a given release).
     """
     root = repo_root.resolve()
     matches: set[Path] = set()
     for g in globs:
+        optional = g.startswith("?")  # M1: "?glob" may match nothing
+        pattern = g[1:] if optional else g
         try:
-            matches.update(repo_root.glob(g))
+            matched = list(repo_root.glob(pattern))
         except NotImplementedError:  # absolute patterns
             raise PublishError(f"glob must be relative to the repo root: {g!r}") from None
+        if not optional and not any(not p.is_dir() for p in matched):
+            raise PublishError(f"the glob {g!r} matched no file")
+        matches.update(matched)
 
     staged: list[StagedFile] = []
     for p in sorted(matches):
@@ -159,15 +167,24 @@ def chunk(
     return chunks
 
 
-def validate_tag(tag: str) -> None:
-    """N6/M6: the tag reaches Hub URLs; validate it as the first statement, as a
-    PublishError, before any hub call sees it."""
-    try:
-        TypeAdapter(Tag).validate_python(tag)
-    except ValidationError:
-        raise PublishError(
-            f"tag {tag!r} must match (ndb|et)-v<major>.<minor>.<patch> or arc-<name>"
-        ) from None
+def validate_tag(tag: str, kind: str = "release") -> None:
+    """N6/M6/L1: the tag reaches Hub URLs; validate it as the first statement, as a
+    PublishError, before any hub call sees it. Release tags ((ndb|et)-vX.Y.Z) and archive
+    tags (arc-<name>) are two namespaces that must never meet: `manifest_path` sends one
+    to release/<tag>/ and the other to archive/<name>/, so a tag accepted by the wrong
+    command writes a ledger line no witness can ever verify."""
+    shapes = {
+        "release": r"(ndb|et)-v\d+\.\d+\.\d+(\.\d+)?",
+        "archive": r"arc-[a-z0-9-]+",
+    }
+    if kind not in shapes:
+        raise ValueError(f"tag kind must be one of {sorted(shapes)}, not {kind!r}")
+    if re.fullmatch(shapes[kind], tag) is None:
+        other = {
+            "release": "arc-<name> archive tags belong to bench archive",
+            "archive": "(ndb|et)-vX.Y.Z release tags belong to bench publish",
+        }[kind]
+        raise PublishError(f"tag {tag!r} must match the {kind} namespace; {other}")
 
 
 def _validate_revision(sha: str, what: str) -> str:
@@ -409,6 +426,14 @@ def publish(
         raise PublishError(
             f"Hugging Face dataset {spec.hf_repo} does not exist — create it private on the "
             "Hub first; bench publish never creates repos"
+        )
+    visibility = hub.repo_is_private(spec.hf_repo)  # H2: checked, never assumed
+    if visibility != spec.private:
+        is_ = "private" if visibility else "public"
+        must = "private" if spec.private else "public"
+        raise PublishError(
+            f"Hugging Face dataset {spec.hf_repo} is {is_}, but repos.toml says it must be "
+            f"{must}; fix the dataset's visibility on the Hub before publishing"
         )
     staged = stage(root, spec.files)
 

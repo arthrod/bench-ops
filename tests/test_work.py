@@ -54,6 +54,15 @@ def _repo(main: Path, origin: Path) -> Repo:
     return Repo(name="ndb", url=str(origin), branch="main", role="producer", path=main)
 
 
+def _age_creation(main: Path, wt: Path, when: datetime) -> None:
+    """Backdate a worktree's creation clock (C1): the admin gitdir file git wrote at `worktree
+    add`. Without this, every fixture worktree is seconds old and never removable."""
+    for entry in sorted((main / ".git" / "worktrees").iterdir()):
+        gitdir = entry / "gitdir"
+        if gitdir.is_file() and gitdir.read_text().strip().endswith(f"{wt.name}/.git"):
+            os.utime(gitdir, (when.timestamp(), when.timestamp()))
+
+
 def _worktree(
     main: Path, work: Path, name: str, *, when: datetime,
     branch: str | None = None, detach_at: str | None = None,
@@ -67,6 +76,7 @@ def _worktree(
         _run(main, "worktree", "add", "-b", branch, str(wt))
     else:
         _run(main, "worktree", "add", str(wt))
+    _age_creation(main, wt, when)  # C1: the TTL is the worktree's age, not the branch's
     if detach_at is None:
         (wt / f"{name}.txt").write_text(name + "\n")
         _run(wt, "add", "-A")
@@ -125,9 +135,10 @@ def test_scan_lists_age_dirty_branch_and_the_reason_each_worktree_stays(tmp_path
     assert infos["old-merged"].branch == "merged"
     assert infos["old-merged"].dirty == 0
     assert infos["old-merged"].last_commit is not None
+    assert infos["old-merged"].created is not None  # C1: the creation clock is known
     assert NOW - infos["old-merged"].last_commit > TTL
 
-    assert infos["dirty"].reasons == ("dirty 1",)
+    assert infos["dirty"].reasons == ("untracked 1",)  # C1: untracked bytes are named as such
     assert infos["young"].reasons == ("younger than 14d",)
     assert infos["unpushed"].reasons == ("unpushed",)
     assert infos["plain"].reasons == ("not a worktree",)
@@ -154,6 +165,8 @@ def test_scan_detached_head_stays_unless_reachable_from_origin_default(tmp_path:
                               check=True, capture_output=True, text=True).stdout.strip()
     _run(main, "worktree", "add", "--detach", str(work / "det-reach"), reach)
     _run(main, "worktree", "add", "--detach", str(work / "det-side"), side_sha)
+    _age_creation(main, work / "det-reach", OLD)
+    _age_creation(main, work / "det-side", OLD)
 
     infos = _scan(work, main, origin)
     assert infos["det-reach"].removable  # clean, old, and origin/main contains HEAD
@@ -222,7 +235,7 @@ def test_cli_work_lists_every_worktree_with_its_reason_and_removes_nothing(
     assert result.exit_code == 0, result.output
     out = result.output
     assert "old-merged" in out and "would remove" in out
-    assert "dirty 1" in out
+    assert "untracked 1" in out
     assert "younger than 14d" in out
     assert "unpushed" in out
     assert "not a worktree" in out

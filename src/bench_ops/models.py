@@ -64,6 +64,11 @@ class Manifest(Strict):
     r2_prefix: str
     viewer_version: str | None = None
     files: list[FileEntry]
+    # plan 6 C metadata: the absolute, resolved satellite directory this archive snapshotted
+    # (gc's provenance rule, M2: only files of that very tree are deletable through it) and
+    # the --exclude globs that shaped it (H2).
+    archived_root: str | None = None
+    excludes: list[str] = Field(default_factory=list)
 
     def served(self) -> list[FileEntry]:
         return [f for f in self.files if f.served]

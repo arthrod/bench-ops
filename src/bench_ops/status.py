@@ -77,10 +77,20 @@ def _one_line(e: BaseException) -> str:
     return f"{type(e).__name__}: {msg}" if msg else type(e).__name__
 
 
-def report(repo: Repo, latest: dict[str, str], witness: WitnessFn | None) -> RepoReport:
-    """witness=None means offline: producers report their tag without asking Hugging Face."""
+def report(
+    repo: Repo, latest: dict[str, str], witness: WitnessFn | None, pen: Path | None = None
+) -> RepoReport:
+    """witness=None means offline: producers report their tag without asking Hugging Face.
+
+    pen is the worktree pen (BENCH_ROOT/.work, L5): worktrees under it belong to `bench
+    work`, which lists and drains them — they are not stray debris.
+    """
     g = git_status(repo.local_path)
-    stray = [_short(p) for p in worktrees(repo.local_path) if ".worktrees" not in p.parts]
+    stray = [
+        _short(p) for p in worktrees(repo.local_path)
+        if ".worktrees" not in p.parts
+        and not (pen is not None and p.resolve().is_relative_to(pen.resolve()))
+    ]
     release, verdict, broken = "", "", False
     if repo.role == "producer":
         last = _last_release(repo)

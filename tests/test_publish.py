@@ -176,6 +176,7 @@ class FakeHub:
         self.tags: dict[str, str] = {}
         self.manifest_on_main = manifest_on_main
         self.missing_repo = False  # plan 6 A: the dataset was never created
+        self.repo_private = True  # H2: the dataset's visibility, default private
         self.corrupt: set[str] = set()
         self._n = 0
 
@@ -190,6 +191,10 @@ class FakeHub:
     def repo_exists(self, repo: str) -> bool:
         self.calls.append(f"repo_exists:{repo}")
         return not self.missing_repo
+
+    def repo_is_private(self, repo: str) -> bool:  # HfApi.repo_info(...).private (H2)
+        self.calls.append(f"repo_is_private:{repo}")
+        return self.repo_private
 
     def exists(self, repo: str, path: str, revision: str = "main") -> bool:
         self.calls.append(f"exists:{path}@{revision}")
@@ -357,7 +362,8 @@ def test_publish_runs_before_commands_in_the_producer_checkout_before_any_hub_ca
         "before:uv run bench results upload",
     ]
     assert hub.calls[2].startswith("repo_exists:")  # the dataset exists before any hub write
-    assert hub.calls[3].startswith("exists:")  # the scripts ran before any hub write
+    assert hub.calls[3].startswith("repo_is_private:")  # and is as private as the spec says
+    assert hub.calls[4].startswith("exists:")  # the scripts ran before any hub write
     assert cwds == [root, root]
 
 

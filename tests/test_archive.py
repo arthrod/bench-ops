@@ -123,8 +123,10 @@ def test_archive_dry_run_stages_only_no_hub_traffic_no_ledger(tmp_path: Path) ->
     staged = stage_all(sat)
     assert hub.calls == []
     assert m.tag == TAG and m.hf.revision == "0" * 40
-    assert len(m.files) == len(staged)
-    assert sum(f.bytes for f in m.files) == sum(s.bytes for s in staged)
+    assert len(m.files) == len(staged) + 1  # the tree, plus the symlinks.json sidecar (M6)
+    assert f"{PREFIX}symlinks.json" in {f.path for f in m.files}
+    assert m.archived_root == str(sat.resolve())  # gc's provenance anchor (M2)
+    assert sum(f.bytes for f in m.files) == sum(s.bytes for s in staged) + 3  # + b'{}\n'
     assert not (bench_root / "archive" / "index.jsonl").exists()
 
 
@@ -140,9 +142,10 @@ def test_archive_publishes_under_archive_name_and_appends_the_ledger(tmp_path: P
     assert m.producer == "archive"
     assert all(f.path.startswith(PREFIX) for f in m.files)
     assert not any(f.served for f in m.files)
-    assert {f.path: f.sha256 for f in m.files} == {
-        f"{PREFIX}{s.rel}": s.sha256 for s in stage_all(sat)
-    }
+    expected = {f"{PREFIX}{s.rel}": s.sha256 for s in stage_all(sat)}
+    expected[f"{PREFIX}symlinks.json"] = hashlib.sha256(b"{}\n").hexdigest()
+    assert {f.path: f.sha256 for f in m.files} == expected
+    assert m.archived_root == str(sat.resolve())
 
     r2 = hub.oids[-1]  # the manifest commit
     mb = hub.commits[r2][f"{PREFIX}manifest.json"]
@@ -155,16 +158,24 @@ def test_archive_publishes_under_archive_name_and_appends_the_ledger(tmp_path: P
     assert entry.manifest_sha256 == hashlib.sha256(mb).hexdigest()
 
 
-def test_archive_refuses_a_second_archive_of_the_same_name(tmp_path: Path) -> None:
+def test_archive_rerun_is_idempotent_and_a_changed_tree_is_refused(tmp_path: Path) -> None:
+    """H1: a rerun after a complete archive adopts it (nothing re-uploaded, one line); only
+    a tree that moved on is refused — a published archive is never overwritten."""
     sat = _satellite(tmp_path)
     hub = FakeHub(tmp_path)
     bench_root = _bench_root(tmp_path)
     archive(sat, NAME, hub, now=CREATED, yes=True, bench_root=bench_root)
-    with pytest.raises(PublishError, match="never overwritten"):
-        archive(sat, NAME, hub, now=CREATED, yes=True, bench_root=bench_root)
+    commits = [c for c in hub.calls if c.startswith("commit:")]
+
+    archive(sat, NAME, hub, now=CREATED, yes=True, bench_root=bench_root)  # resume/no-op
+    assert [c for c in hub.calls if c.startswith("commit:")] == commits
     ledger = bench_root / "archive" / "index.jsonl"
     assert len(ledger.read_text().splitlines()) == 1  # still exactly one line
-    assert len([c for c in hub.calls if c.startswith("commit:")]) == 2  # first run only
+
+    (sat / "untracked.bin").write_bytes(b"changed")  # the tree moved on after the upload
+    with pytest.raises(PublishError, match="never overwrit"):
+        archive(sat, NAME, hub, now=CREATED, yes=True, bench_root=bench_root)
+    assert len([c for c in hub.calls if c.startswith("commit:")]) == len(commits)
 
 
 def test_archive_refuses_a_tag_already_in_the_local_ledger(tmp_path: Path) -> None:

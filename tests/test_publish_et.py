@@ -24,7 +24,7 @@ ET_FILES = [
     "out/release.json",
     "reports/*.md",
     "reports/*.docx",
-    "reports/figures/**",
+    "?reports/figures/**",  # figures may be absent in a given release (M1)
 ]
 
 TREE = {
@@ -131,6 +131,8 @@ def test_workspace_repos_toml_gives_editors_trial_the_release_section() -> None:
     assert et.release is not None, "plan 6: editors_trial needs [repos.release] in repos.toml"
     assert et.release.hf_repo == HF_REPO
     assert et.release.files == ET_FILES
+    assert et.release.private is True  # the trial documents are not public (H2)
+    assert cfg.by_name("ndb").release.private is False  # the public record dataset
     assert et.release.served == []  # benchmarks.law reads the bundle at build time
     assert et.release.before == []  # facts.py/render_reports.py stay in RELEASING.md for now
 
