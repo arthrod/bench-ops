@@ -75,3 +75,10 @@ def worktrees(repo: Path) -> list[Path]:
     lines = git(repo, "worktree", "list", "--porcelain").splitlines()
     paths = [Path(ln.split(" ", 1)[1]) for ln in lines if ln.startswith("worktree ")]
     return paths[1:]
+
+
+def origin_url(repo: Path) -> str | None:
+    try:
+        return git(repo, "config", "--get", "remote.origin.url").strip() or None
+    except subprocess.CalledProcessError:
+        return None

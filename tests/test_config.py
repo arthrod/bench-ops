@@ -57,3 +57,23 @@ def test_by_name(tmp_path: Path) -> None:
     assert cfg.by_name("ndb").url.endswith("neurotic_docx_bench.git")
     with pytest.raises(KeyError):
         cfg.by_name("nope")
+
+
+@pytest.mark.parametrize(
+    ("a", "b"),
+    [
+        ("https://github.com/arthrod/jubarte-app.git", "git@github.com:arthrod/jubarte-app.git"),
+        ("https://github.com/Arthrod/Jubarte-App", "https://github.com/arthrod/jubarte-app.git/"),
+        ("ssh://git@github.com/arthrod/x.git", "https://github.com/arthrod/x"),
+    ],
+)
+def test_same_remote(a: str, b: str) -> None:
+    from bench_ops.config import same_remote
+
+    assert same_remote(a, b)
+
+
+def test_different_remote() -> None:
+    from bench_ops.config import same_remote
+
+    assert not same_remote("https://github.com/arthrod/a", "https://github.com/arthrod/b")

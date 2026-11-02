@@ -120,3 +120,24 @@ def test_offline_producer_says_offline(tmp_path: Path) -> None:
     r = _repo(tmp_path, "ndb", "producer")
     _ledger(r, "ndb-v1.0.0")
     assert report(r, latest={}, witness=None).witness == "(offline)"
+
+
+def test_cli_repo_matches_other_checkout_by_origin(tmp_path: Path,
+                                                    monkeypatch: pytest.MonkeyPatch) -> None:
+    """A clone or worktree at another path is still the linked repo: same origin, same checks."""
+    p = _repo(tmp_path, "ndb", "producer")
+    _ledger(p, "ndb-v1.0.1")
+    c = _repo(tmp_path, "jubarte-app", "consumer")
+    elsewhere = tmp_path / "elsewhere" / "jubarte-app"
+    clone_or_pull(c.url, elsewhere, "main")
+    (elsewhere / "bench.lock").write_text("ndb=ndb-v1.0.0\n")
+    root = tmp_path / "root"
+    root.joinpath("repos.toml").write_text(
+        f'[[repos]]\nname = "ndb"\nurl = "x"\nrole = "producer"\n'
+        f'[[repos]]\nname = "jubarte-app"\nurl = "{c.url}"\nrole = "consumer"\n'
+    )
+    monkeypatch.setenv("BENCH_ROOT", str(root))
+    args = ["status", "--offline", "--fail-on-stale", "--repo", str(elsewhere)]
+    result = CliRunner().invoke(app, args)
+    assert result.exit_code == 1, result.output
+    assert "stale" in result.output

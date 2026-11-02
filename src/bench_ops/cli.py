@@ -13,7 +13,7 @@ from rich.console import Console
 from rich.table import Table as RichTable
 
 from bench_ops.config import Config, load_config
-from bench_ops.gitx import clone_or_pull
+from bench_ops.gitx import clone_or_pull, origin_url
 from bench_ops.hf import HfHub, Witness, sha256_of, verify_manifest
 from bench_ops.hooks import secrets_command, size_guard
 from bench_ops.models import LedgerEntry, Manifest
@@ -89,10 +89,11 @@ def status(
     cfg = _config()
     repos = cfg.repos
     if repo is not None:
-        repos = [r for r in cfg.repos if r.local_path.resolve() == repo.resolve()]
-        if not repos:
+        found = cfg.for_checkout(repo, origin_url(repo))
+        if found is None:
             console.print(f"[yellow]{repo} is not a linked repo; nothing to check[/]")
             raise typer.Exit(0)
+        repos = [found]
     latest = latest_tags(cfg.repos)
     witness = None if offline else _witness_via_hf
     table = RichTable(title="bench status")
