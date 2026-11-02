@@ -90,7 +90,7 @@ Follow `editors_trial/RELEASING.md` top to bottom and tick it in the release's t
 | C2 | Facts and reports | `python3 build/facts.py`; `python3 build/render_reports.py --stale out/facts-v<previous>.json`; `--all-twins`; `--check`; copy `out/facts.json` to `out/facts-vX.Y.Z.json` | every sentence about a moved fact re-read; nothing typed by hand | |
 | C3 | Demos whose pin moved | `build/rebuild_demo.sh <slug>` | each demo opened in a real browser | |
 | C4 | Gate | `python3 -m unittest discover -s build -p "test_*.py"`; `build/verify_publication.sh --with-word` **twice** | no `WRONG-DOCUMENT`/`ORACLE-NOT-CLEAN`; every `.docx` Word valid | |
-| C5 | Publish the trial | CHANGELOG section, PR to `main`, merge, tag `vX.Y.Z`, GitHub release | | |
+| C5 | Publish the trial | CHANGELOG section, PR to `main`, merge, tag `vX.Y.Z`, GitHub release, then `bench publish editors_trial et-vX.Y.Z` (report bundle to the private `arthrod/editors_trial-artifacts` dataset; push the ledger commit and tag it prints) | bundle on HF, tag `et-vX.Y.Z`; `bench status` shows it verified | |
 | C6 | Publish the site | in `benchmarks-law` on up-to-date `main`: `pnpm sync:content`, `pnpm sync:vendors`, `pnpm sync:assets`, `pnpm sync:demos` (if a demo was rebuilt), `pnpm run deploy` (needs `EMDASH_TOKEN`; `REPORTS_ROOT` defaults to `../../editors_trial`) | https://benchmarks.law home, `/editors-trial/`, vendors, every report and demo checked in a real browser | `bench deploy benchmarks-law` (Plan 2 rev 3) |
 | C7 | Close out | commit the site, PR, merge, tag with the same version; close the issues | | |
 

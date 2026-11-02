@@ -19,6 +19,10 @@ branch = "main"
 role = "producer"
 path = "/Users/arthrod/temp/T/editors_trial"
 
+[repos.release]           # plan 6 part A: the report bundle; benchmarks.law reads it at build time
+hf_repo = "arthrod/editors_trial-artifacts"
+files = ["out/facts.json", "out/release.json", "reports/*.md", "reports/*.docx", "reports/figures/**"]
+
 [[repos]]
 name = "benchmarks-law"
 url = "https://github.com/arthrod/benchmarks-law.git"

@@ -403,6 +403,11 @@ def publish(
         )
 
     _run_before(spec, root, dry_run=False, run=run)
+    if not hub.repo_exists(spec.hf_repo):  # plan 6 A: publishing never creates repos
+        raise PublishError(
+            f"Hugging Face dataset {spec.hf_repo} does not exist — create it private on the "
+            "Hub first; bench publish never creates repos"
+        )
     staged = stage(root, spec.files)
 
     if hub.exists(spec.hf_repo, manifest_rel):  # a previous publish got as far as the hub
