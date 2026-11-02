@@ -44,10 +44,11 @@ Per-repo tooling the steps below need: `uv` (Python 3.14), `pnpm`, LibreOffice a
 
 ## The hooks (every repo, no CI needed)
 
-All three run on **pre-commit**, in about a second, from `bench-ops/lefthook/common.yml` (each repo's `lefthook.yml` only points there):
+All four run on **pre-commit**, in about a second, from `bench-ops/lefthook/common.yml` (each repo's `lefthook.yml` only points there):
 
 - `size guard`: no file over 2 MB, no binaries under `results/`, `out/`, `public/fixtures/`, `public/neurotic-docx-bench/`, `.bench/`.
 - `secrets`: ripsecrets on the staged files.
+- `ledger`: `release/index.jsonl` may only grow — `bench hook ledger` refuses staged rewrites, deletions and renames of the ledger. No glob: it runs on every commit, because lefthook's glob file lists exclude deletions and would skip the job exactly when it is needed.
 - `release state`: `bench status --fail-on-stale` refuses a commit while the repo's `bench.lock` is behind its producer's latest release (no-op until the lock exists).
 
 Escape hatches: `LEFTHOOK=0 git commit …`, `BENCH_ALLOW_STALE=1 git commit …`. Change hooks only in `bench-ops/lefthook/common.yml`. Never add pre-push or post-* hooks there: they belong to git-lfs, and lefthook owning them makes pushes from older ndb branches skip LFS uploads (`tests/test_lefthook_config.py` enforces this). A branch created before the hook PRs (2026-11-02) carries the old file; merge `main` into it and run `bench sync`.

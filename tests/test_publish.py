@@ -160,12 +160,18 @@ def test_chunk_never_returns_an_empty_chunk() -> None:
 
 
 class FakeHub:
-    """Stands in for the Hub protocol: records every call, keeps cumulative commit trees."""
+    """Stands in for the Hub protocol: records every call, keeps cumulative commit trees.
+
+    Models what the real Hub does (N8): `exists` honours the revision, a tag cannot be
+    re-created at another revision, and `revision_of` finds the commit that added a path
+    (what get_paths_info(expand=True).last_commit reports).
+    """
 
     def __init__(self, tmp: Path, manifest_on_main: bool = False) -> None:
         self.tmp = tmp
         self.calls: list[str] = []
         self.commits: dict[str, dict[str, bytes]] = {}
+        self.added: dict[str, set[str]] = {}  # oid -> paths this commit wrote
         self.oids: list[str] = []
         self.tags: dict[str, str] = {}
         self.manifest_on_main = manifest_on_main
@@ -182,20 +188,38 @@ class FakeHub:
 
     def exists(self, repo: str, path: str, revision: str = "main") -> bool:
         self.calls.append(f"exists:{path}@{revision}")
-        return self.manifest_on_main or any(path in self.commits[o] for o in self.oids)
+        if revision != "main":
+            return revision in self.oids and path in self._tree(revision)
+        if self.manifest_on_main:
+            return True
+        return any(path in self.added[o] for o in self.oids)
 
     def commit(self, repo: str, files: dict[str, Path], message: str) -> str:
         self.calls.append(f"commit:{message}")
         self._n += 1
         oid = f"{self._n:040x}"
-        tree = self._tree(self.oids[-1]) if self.oids else {}
+        tree = dict(self._tree(self.oids[-1])) if self.oids else {}
         tree.update({path: local.read_bytes() for path, local in files.items()})
         self.commits[oid] = tree
+        self.added[oid] = set(files)
         self.oids.append(oid)
         return oid
 
+    def revision_of(self, repo: str, path: str, revision: str = "main") -> str | None:
+        self.calls.append(f"revision_of:{path}@{revision}")
+        for oid in reversed(self.oids):
+            if path in self.added.get(oid, ()):
+                return oid
+        return None
+
+    def tag_revision(self, repo: str, tag: str) -> str | None:
+        self.calls.append(f"tag_revision:{tag}")
+        return self.tags.get(tag)
+
     def create_tag(self, repo: str, tag: str, revision: str) -> None:
         self.calls.append(f"tag:{tag}@{revision}")
+        if tag in self.tags and self.tags[tag] != revision:
+            raise RuntimeError(f"tag {tag} already exists at {self.tags[tag]} (immutable)")
         self.tags[tag] = revision
 
     def paths_info(self, repo: str, revision: str, paths: list[str]) -> dict[str, str | None]:

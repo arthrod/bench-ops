@@ -15,7 +15,7 @@ from rich.console import Console
 from rich.table import Table as RichTable
 
 from bench_ops.config import Config, load_config
-from bench_ops.gc import VerifiedManifest, fetch_verified, verdicts
+from bench_ops.gc import VerifiedManifest, fetch_verified, tracked_in, verdicts
 from bench_ops.gitx import clone_or_pull, git, origin_url
 from bench_ops.hf import HfHub, Witness, sha256_of, verify_manifest
 from bench_ops.hooks import secrets_command, size_guard
@@ -130,21 +130,26 @@ def status(
         table.add_row(rep.name, rep.role, rep.branch, str(rep.dirty),
                       "\n".join(rep.stray_worktrees) or "-", rep.release, cell)
     console.print(table)
-    if fail_on_stale and broken:
-        console.print(
-            "[red]BROKEN: a producer's release is not intact on Hugging Face; "
-            "repair the record before relying on it or deleting anything (gc refuses)[/]"
-        )
-        raise typer.Exit(1)
-    if fail_on_stale and stale:
-        if os.environ.get("BENCH_ALLOW_STALE") == "1":
-            console.print("[yellow]consumer lock is behind; allowed by BENCH_ALLOW_STALE=1[/]")
-            return
-        console.print(
-            "[red]a consumer lock is behind its producer; bump bench.lock "
-            "or commit with BENCH_ALLOW_STALE=1[/]"
-        )
-        raise typer.Exit(1)
+    if fail_on_stale:
+        failed = False  # both messages, then one exit (N7): broken names the record,
+        # stale names the consumer — neither may hide the other
+        if broken:
+            console.print(
+                "[red]BROKEN: a producer's release is not intact on Hugging Face; "
+                "repair the record before relying on it or deleting anything (gc refuses)[/]"
+            )
+            failed = True
+        if stale:
+            if os.environ.get("BENCH_ALLOW_STALE") == "1":
+                console.print("[yellow]consumer lock is behind; allowed by BENCH_ALLOW_STALE=1[/]")
+            else:
+                console.print(
+                    "[red]a consumer lock is behind its producer; bump bench.lock "
+                    "or commit with BENCH_ALLOW_STALE=1[/]"
+                )
+                failed = True
+        if failed:
+            raise typer.Exit(1)
 
 
 def _size_at_head(rel: str) -> int | None:
@@ -170,11 +175,13 @@ def publish_cmd(
         bool, typer.Option(help="Local checks and staging only: no hub calls, no writes.")
     ] = False,
 ) -> None:
-    """Upload a producer's release to Hugging Face, verify it, then ledger and tag it (plan 2).
+    """Upload a producer's release to Hugging Face, verify it, then record it (plan 2).
 
     Runs the producer's own `before` scripts (its [repos.release], rev 3) in its checkout
     first — pages current, stores uploaded — stopping at the first failure; nothing here
-    repeats what they already do. Never pushes git: the ledger commit and the tag stay local
+    repeats what they already do. Resumable and idempotent (C3): rerunning after a failure
+    adopts what is already on the Hub and creates only the missing records; every step
+    prints `did` or `done`. Never pushes git: the ledger commit and the tag stay local
     until the printed push command is run by hand.
     """
     cfg = _config()
@@ -188,6 +195,9 @@ def publish_cmd(
         m = publish_release(repo, tag, HfHub(), now=datetime.now(UTC), dry_run=dry_run)
     except PublishError as e:
         console.print(f"[red]{e}[/]")
+        raise typer.Exit(1) from None
+    except Exception as e:  # noqa: BLE001 -- a failed publish is a message, never a traceback (M6)
+        console.print(f"[red]{type(e).__name__}: {e}[/]", markup=False, highlight=False)
         raise typer.Exit(1) from None
     console.print(dumps(m), markup=False, highlight=False)
     if not dry_run:
@@ -275,6 +285,8 @@ def gc_cmd(
     """
     cfg = _config()
     hub = HfHub()
+    roots = [r.local_path for r in cfg.repos]  # candidates must live in a linked repo (M2)
+    tracked = tracked_in(roots)  # and never be a file git tracks (M3)
     verified: list[VerifiedManifest] = []
     unverified: set[str] = set()  # fail closed: these shas are never deletable
     for repo in cfg.by_role("producer"):
@@ -302,8 +314,11 @@ def gc_cmd(
                     except ValidationError:
                         pass
     targets = [p if p.is_absolute() else Path.cwd() / p for p in paths]
-    for v in verdicts(targets, verified, unverified):
+    for v in verdicts(targets, verified, unverified, roots=roots, tracked=tracked):
         if yes and v.deletable:
+            if not v.current():  # changed between hashing and this unlink (M1)
+                console.print(f"[yellow]keep[/] {v.path}  ·  changed since hashing; not deleted")
+                continue
             v.path.unlink()
             console.print(f"[red]deleted[/] {v.path}  ·  {v.reason}")
         else:
@@ -345,29 +360,33 @@ def hook_secrets(files: StagedFiles = None) -> None:
 LEDGER = "release/index.jsonl"
 
 
-def _git_text(repo: Path, *args: str) -> str | None:
+def _git_text(repo: Path, *args: str, hook: bool = False) -> str | None:
     try:
-        return git(repo, *args)
+        return git(repo, *args, hook=hook)
     except subprocess.CalledProcessError:
         return None
 
 
 @hook_app.command("ledger")
 def hook_ledger() -> None:
-    """Refuse anything but an append to release/index.jsonl (D7/D14).
+    """Refuse anything but an append to release/index.jsonl (D7/D14, C1/C2).
 
-    Compares the staged blob (`git show :release/index.jsonl`) with HEAD's, so the bytes
-    validated are the bytes committed; a staged deletion or rename is refused too.
+    Runs on every commit (lefthook must not glob-gate it: staged deletions and renames are
+    exactly what `git diff --cached --name-status -M` catches). The staged blob is read
+    from the index git will commit — GIT_INDEX_FILE is kept, so for a path-limited commit
+    (`git commit -- release/index.jsonl`) the bytes validated are the bytes committed —
+    and compared with HEAD's.
     """
     cwd = Path.cwd()
-    staged = _git_text(cwd, "show", f":{LEDGER}")
+    staged = _git_text(cwd, "show", f":{LEDGER}", hook=True)
     if staged is None:  # not in the index: a deletion/rename, or nothing staged
-        diff = _git_text(cwd, "diff", "--cached", "--name-status", "--", LEDGER) or ""
+        diff = _git_text(cwd, "diff", "--cached", "--name-status", "-M", "--", LEDGER,
+                         hook=True) or ""
         if any(ln.split("\t")[0].startswith(("D", "R")) for ln in diff.splitlines()):
             console.print(f"[red]{LEDGER} may only grow: staged deletions and renames are refused[/]")
             raise typer.Exit(1)
         return
-    problems = check_ledger(_git_text(cwd, "show", f"HEAD:{LEDGER}"), staged)
+    problems = check_ledger(_git_text(cwd, "show", f"HEAD:{LEDGER}", hook=True), staged)
     for p in problems:
         console.print(f"[red]{p}[/]")
     if problems:

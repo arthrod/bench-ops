@@ -15,7 +15,10 @@ pre-commit:
     - name: secrets
       run: bench hook secrets {staged_files}
     - name: ledger
-      glob: "release/index.jsonl"
+      # No glob, on purpose: lefthook builds globbed file lists with --diff-filter=ACMR, so a
+      # glob on release/index.jsonl skips this job exactly when it is needed — a staged
+      # deletion or rename (C1). `bench hook ledger` itself decides: it reads the staged blob
+      # and `git diff --cached --name-status -M`, so it is cheap on every commit, in every repo.
       run: bench hook ledger
     - name: release state
       run: bench status --offline --fail-on-stale --repo .

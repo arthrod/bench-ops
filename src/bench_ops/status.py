@@ -36,6 +36,16 @@ def _last_release(repo: Repo) -> LedgerEntry | None:
     return LedgerEntry.last(ledger.read_text()) if ledger.exists() else None
 
 
+def _torn_ledger(repo: Repo) -> str | None:
+    """'torn ledger line N' when the producer's ledger has a line that is not an entry (M4):
+    a crash mid-append; `LedgerEntry.last` tolerates it, the report must still say so."""
+    ledger = repo.local_path / "release" / "index.jsonl"
+    if not ledger.exists():
+        return None
+    bad = LedgerEntry.bad_line(ledger.read_text())
+    return None if bad is None else f"torn ledger line {bad}"
+
+
 def latest_tags(repos: list[Repo]) -> dict[str, str]:
     """producer name -> tag of its last ledger line (producers without a ledger are absent)."""
     out: dict[str, str] = {}
@@ -61,6 +71,12 @@ def _describe(w: Witness) -> str:
     return ", ".join(parts)
 
 
+def _one_line(e: BaseException) -> str:
+    """An exception folded into one table-cell line (M5): 'RemoteEntryNotFoundError: 404 …'."""
+    msg = " ".join(str(e).split())
+    return f"{type(e).__name__}: {msg}" if msg else type(e).__name__
+
+
 def report(repo: Repo, latest: dict[str, str], witness: WitnessFn | None) -> RepoReport:
     """witness=None means offline: producers report their tag without asking Hugging Face."""
     g = git_status(repo.local_path)
@@ -68,16 +84,22 @@ def report(repo: Repo, latest: dict[str, str], witness: WitnessFn | None) -> Rep
     release, verdict, broken = "", "", False
     if repo.role == "producer":
         last = _last_release(repo)
-        if last is None:
+        torn = _torn_ledger(repo)
+        if last is None and torn is None:
             release = "no releases yet"
         else:
-            release = last.tag
-            if witness is None:
+            release = last.tag if last is not None else "(unreadable)"
+            if torn is not None:
+                verdict, broken = torn, True  # the record itself is damaged (M4)
+            elif witness is None:
                 verdict = "(offline)"
             else:
-                w = witness(last)
-                verdict = _describe(w)
-                broken = not w.ok
+                try:
+                    w = witness(last)
+                except Exception as e:  # noqa: BLE001 -- any hub failure is BROKEN, never a crash (M5)
+                    verdict, broken = _one_line(e), True
+                else:
+                    verdict, broken = _describe(w), not w.ok
     else:
         lock_path = repo.local_path / "bench.lock"
         if not lock_path.exists():
