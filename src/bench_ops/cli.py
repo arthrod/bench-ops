@@ -14,13 +14,14 @@ from pydantic import ValidationError
 from rich.console import Console
 from rich.table import Table as RichTable
 
+from bench_ops.archive import archive as archive_release
 from bench_ops.config import Config, load_config
 from bench_ops.gc import VerifiedManifest, fetch_verified, tracked_in, verdicts
 from bench_ops.gitx import clone_or_pull, git, origin_url
 from bench_ops.hf import HfHub, Witness, sha256_of, verify_manifest
 from bench_ops.hooks import secrets_command, size_guard
 from bench_ops.ledger import check_ledger
-from bench_ops.models import LedgerEntry, Lock, Manifest, dumps
+from bench_ops.models import LedgerEntry, Lock, Manifest, dumps, manifest_path
 from bench_ops.publish import PublishError, run_script
 from bench_ops.publish import publish as publish_release
 from bench_ops.status import latest_tags, report
@@ -274,15 +275,18 @@ def deploy_cmd(
 
 @app.command("gc")
 def gc_cmd(
-    paths: Annotated[list[Path], typer.Argument(help="Local files to consider deleting.")],
+    paths: Annotated[list[Path], typer.Argument(help="Local files (or directories) to consider deleting.")],
     yes: Annotated[
         bool, typer.Option(help="Actually delete; without it gc only reports.")
     ] = False,
 ) -> None:
-    """Delete local files whose bytes the Hub records in a verified release manifest (plan 2).
+    """Delete local files whose bytes the Hub records in a verified manifest (plans 2 and 6).
 
-    The Hub is the only authority: every ledger line is verified against it, a served file is
-    never deleted, and nothing under .git/ is touched.
+    The Hub is the only authority: every ledger line — each producer's
+    release/index.jsonl and BENCH_ROOT/archive/index.jsonl — is verified against it, a
+    served file is never deleted, and nothing under .git/ is touched. A directory argument
+    is expanded to its files (an archived satellite's working tree); its .git directory
+    stays, to be removed by hand once the verdict output has been read.
     """
     cfg = _config()
     hub = HfHub()
@@ -290,8 +294,12 @@ def gc_cmd(
     tracked = tracked_in(roots)  # and never be a file git tracks (M3)
     verified: list[VerifiedManifest] = []
     unverified: set[str] = set()  # fail closed: these shas are never deletable
-    for repo in cfg.by_role("producer"):
-        ledger = repo.local_path / "release" / "index.jsonl"
+    sources: list[tuple[Path, str]] = [
+        *((r.local_path, "release/index.jsonl") for r in cfg.by_role("producer")),
+        (cfg.root, "archive/index.jsonl"),  # plan 6 C: archive manifests are witnesses too
+    ]
+    for base, rel_ledger in sources:
+        ledger = base / rel_ledger
         if not ledger.exists():
             continue
         lines = [ln for ln in ledger.read_text().splitlines() if ln.strip()]
@@ -299,13 +307,13 @@ def gc_cmd(
             try:
                 entry = LedgerEntry.from_line(line)
             except ValidationError:
-                console.print(f"[red]{repo.name}: ledger line {i} is not a ledger entry[/]")
+                console.print(f"[red]{ledger}: line {i} is not a ledger entry[/]")
                 raise typer.Exit(1) from None
             vm = fetch_verified(entry, hub)
             if vm is not None:
                 verified.append(vm)
             else:
-                local = repo.local_path / "release" / entry.tag / "manifest.json"
+                local = base / manifest_path(entry.tag)
                 if local.exists():  # untrusted bytes, but its shas must block deletes
                     try:
                         unverified.update(
@@ -314,8 +322,22 @@ def gc_cmd(
                         )
                     except ValidationError:
                         pass
-    targets = [p if p.is_absolute() else Path.cwd() / p for p in paths]
-    for v in verdicts(targets, verified, unverified, roots=roots, tracked=tracked):
+    passed = [p if p.is_absolute() else Path.cwd() / p for p in paths]
+    targets: list[Path] = []
+    for p in passed:
+        # The directory stays a target (reported as skipped — gc deletes files, not dirs)
+        # and its files are considered one by one: that is how an archived satellite is
+        # collected, without making `bench gc out/` silently say nothing (N7).
+        targets.append(p)
+        if p.is_dir():
+            targets += sorted(q for q in p.rglob("*") if q.is_file() or q.is_symlink())
+    linked = [r.resolve() for r in roots]
+    extra_roots: list[Path] = []
+    for p in passed:  # an explicitly passed directory (an archived satellite) is its own root;
+        anchor = p.resolve() if p.is_dir() else p.resolve().parent  # the two-witness rule
+        if not any(anchor.is_relative_to(r) for r in linked):  # still gates every delete
+            extra_roots.append(anchor)
+    for v in verdicts(targets, verified, unverified, roots=roots + extra_roots, tracked=tracked):
         if yes and v.deletable:
             if not v.current():  # changed between hashing and this unlink (M1)
                 console.print(f"[yellow]keep[/] {v.path}  ·  changed since hashing; not deleted")
@@ -372,6 +394,47 @@ def work_cmd(
                     console.print(f"[red]removed[/] {line}")
         else:
             console.print(f"[yellow]keep[/] {line}  ·  {'; '.join(info.reasons)}")
+
+
+@app.command("archive")
+def archive_cmd(
+    directory: Annotated[Path, typer.Argument(help="The satellite directory to snapshot.")],
+    name: Annotated[str, typer.Argument(help="Archive name, [a-z0-9-]+ (the tag is arc-<name>).")],
+    yes: Annotated[
+        bool, typer.Option(help="Actually publish; without it bench prints the summary only.")
+    ] = False,
+) -> None:
+    """Snapshot a satellite directory to the private archive dataset (plan 6 C).
+
+    The whole tree goes to arthrod/neurotic_docx_bench-archive under archive/<name>/ — the
+    working tree (untracked and modified files included) *and* the .git directory, so
+    history survives. The HF tag is arc-<name> and one line lands in
+    BENCH_ROOT/archive/index.jsonl; `bench gc <dir>` may delete local files once that
+    manifest verifies on HF. Without --yes, only the summary is printed.
+    """
+    cfg = _config()
+    try:
+        m = archive_release(
+            directory.resolve(), name, HfHub(), now=datetime.now(UTC), yes=yes,
+            bench_root=cfg.root,
+        )
+    except PublishError as e:
+        console.print(str(e), style="red", markup=False, highlight=False)
+        raise typer.Exit(1) from None
+    except Exception as e:  # noqa: BLE001 -- a failed archive is a message, never a traceback
+        console.print(f"[red]{type(e).__name__}: {e}[/]", markup=False, highlight=False)
+        raise typer.Exit(1) from None
+    if yes:
+        console.print(
+            f"commit the ledger: git -C {cfg.root} add archive/index.jsonl && "
+            f"git -C {cfg.root} commit -m 'archive: {m.tag}'"
+        )
+    else:
+        total = sum(f.bytes for f in m.files)
+        console.print(
+            f"{m.tag}: {len(m.files)} files, {total} bytes (dry run — nothing written; "
+            "rerun with --yes)"
+        )
 
 
 StagedFiles = Annotated[list[Path] | None, typer.Argument(help="Staged files (from lefthook).")]

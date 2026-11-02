@@ -14,6 +14,7 @@ from bench_ops.models import (
     Scores,
     Table,
     dumps,
+    manifest_path,
 )
 
 SHA = "a" * 64
@@ -52,6 +53,22 @@ def test_served_subset() -> None:
 def test_tag_shape() -> None:
     with pytest.raises(ValidationError):
         Manifest.model_validate(manifest().model_dump() | {"tag": "v1"})
+
+
+def test_tag_shape_gains_archive_names() -> None:
+    """Plan 6 C: satellites release as arc-<name>; the name charset is [a-z0-9-]+."""
+    good = Manifest.model_validate(manifest().model_dump() | {"tag": "arc-ndb-105"})
+    assert good.tag == "arc-ndb-105"
+    for bad in ("arc-", "arc-Ndb", "arc-ndb_1", "arc-ndb.105", "arc", "ARC-ndb"):
+        with pytest.raises(ValidationError):
+            Manifest.model_validate(manifest().model_dump() | {"tag": bad})
+
+
+def test_manifest_path_places_each_tag_family() -> None:
+    """Plan 6 C: releases live under release/<tag>/, archives under archive/<name>/."""
+    assert manifest_path("ndb-v1.0.0") == "release/ndb-v1.0.0/manifest.json"
+    assert manifest_path("et-v0.9.3") == "release/et-v0.9.3/manifest.json"
+    assert manifest_path("arc-ndb-105") == "archive/ndb-105/manifest.json"
 
 
 def test_ledger_line_and_back() -> None:

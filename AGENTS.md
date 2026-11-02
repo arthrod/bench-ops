@@ -37,6 +37,7 @@ brew install lefthook ripsecrets
 bench sync                                  # clone/fast-forward every repo, install hooks; exits 1 on HOOKS NOT ACTIVE
 bench status                                # branch, dirt, stray worktrees, release ledger per repo (--offline skips HF)
 bench work                                  # list `.work/` worktrees (age, dirt, merged-or-pushed); `--yes` removes only the old, clean, merged/pushed ones, via `git worktree remove` (never `--force`)
+bench archive <dir> <name>                  # snapshot a satellite (working tree **and** `.git`, untracked included) to the private `arthrod/neurotic_docx_bench-archive` dataset under `archive/<name>/`, tag `arc-<name>`, one line in `archive/index.jsonl`; then `bench gc <dir> --yes` may delete the local files once the manifest verifies on HF (the `.git` dir itself stays for hand removal)
 ```
 
 Per-repo tooling the steps below need: `uv` (Python 3.14), `pnpm`, LibreOffice and Microsoft Word on macOS (ndb oracle and the Word gates), `wrangler` (`bunx wrangler login`, the token lives about an hour), `hf auth login`, `gh auth login`. Secrets stay in each repo's git-ignored `.env`; check their length, never print them.
@@ -110,7 +111,7 @@ Both sites must show the same figures for the same bench version: jubarte.pro (p
 
 - Never edit a generated file (`RESULTS*.md`, `out/facts.json`, rendered reports, `data/facts.jsonl` by hand). Change the measurement or the template and regenerate.
 - The JSONL stores are append-only; never rewrite or reorder them.
-- No binaries in git: heavy outputs go to HF (record) and R2 (served copy). Delete local data only after both are verified.
+- No binaries in git: heavy outputs go to HF (record) and R2 (served copy). Delete local data only after both are verified. Satellites (`ndb-105`, `ndb-apryse`, root `*.log`) leave `~/temp/T` only through `bench archive` + `bench gc`, after the two witnesses and Arthur's yes.
 - Word validity is checked in Word itself (`open file.docx`): no warning, no repair offer.
 - Websites are checked in a real browser, not only with curl.
 - One Hugging Face upload batch per many files: the hub allows 320 commits an hour.

@@ -21,7 +21,16 @@ from pydantic import (
 
 Sha256 = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
 GitSha = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{40}$")]
-Tag = Annotated[str, StringConstraints(pattern=r"^(ndb|et)-v\d+\.\d+\.\d+(\.\d+)?$")]
+# Releases are <producer>-vX.Y.Z; archive snapshots (plan 6) are arc-<name> with [a-z0-9-]+.
+Tag = Annotated[str, StringConstraints(pattern=r"^((ndb|et)-v\d+\.\d+\.\d+(\.\d+)?|arc-[a-z0-9-]+)$")]
+
+
+def manifest_path(tag: str) -> str:
+    """Where a tag's manifest lives, relative to the producer repo (or BENCH_ROOT): the
+    release/<tag>/ tree for releases, archive/<name>/ for arc-<name> snapshots (plan 6 C)."""
+    if tag.startswith("arc-"):
+        return f"archive/{tag[4:]}/manifest.json"
+    return f"release/{tag}/manifest.json"
 
 
 class Strict(BaseModel):

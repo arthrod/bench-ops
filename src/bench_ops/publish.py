@@ -159,13 +159,15 @@ def chunk(
     return chunks
 
 
-def _validate_tag(tag: str) -> None:
+def validate_tag(tag: str) -> None:
     """N6/M6: the tag reaches Hub URLs; validate it as the first statement, as a
     PublishError, before any hub call sees it."""
     try:
         TypeAdapter(Tag).validate_python(tag)
     except ValidationError:
-        raise PublishError(f"tag {tag!r} must match (ndb|et)-v<major>.<minor>.<patch>") from None
+        raise PublishError(
+            f"tag {tag!r} must match (ndb|et)-v<major>.<minor>.<patch> or arc-<name>"
+        ) from None
 
 
 def _validate_revision(sha: str, what: str) -> str:
@@ -379,7 +381,7 @@ def publish(
         raise PublishError(f"{repo.name} has no [repos.release] section; it cannot publish")
     if spec.served:
         raise PublishError("R2 mirror needs a content witness; see review D2/D3/D11–D13")
-    _validate_tag(tag)
+    validate_tag(tag)
 
     root = repo.local_path
     ledger = root / "release" / "index.jsonl"

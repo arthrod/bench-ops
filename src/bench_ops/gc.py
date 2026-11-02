@@ -26,7 +26,7 @@ from pydantic import ValidationError
 
 from bench_ops.gitx import git
 from bench_ops.hf import HubApi, verify_manifest
-from bench_ops.models import LedgerEntry, Manifest
+from bench_ops.models import LedgerEntry, Manifest, manifest_path
 
 EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
 
@@ -44,7 +44,7 @@ class VerifiedManifest:
 
 def fetch_verified(entry: LedgerEntry, hub: HubApi) -> VerifiedManifest | None:
     """None when any check fails — always before any gc decision is made from it."""
-    path = f"release/{entry.tag}/manifest.json"
+    path = manifest_path(entry.tag)  # release/<tag>/ or archive/<name>/ (plan 6 C)
     try:
         local = hub.download(entry.hf.repo, entry.hf.revision, path)
     except Exception:  # noqa: BLE001 -- any hub failure (missing revision, network) fails closed
