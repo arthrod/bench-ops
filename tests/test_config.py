@@ -1,0 +1,59 @@
+from pathlib import Path
+
+import pytest
+
+from bench_ops.config import Config, Repo, load_config
+
+TOML = """
+[[repos]]
+name = "ndb"
+url = "https://github.com/jandira-tech/neurotic_docx_bench.git"
+branch = "main"
+role = "producer"
+
+[[repos]]
+name = "jubarte-app"
+url = "git@github.com:arthrod/jubarte-app.git"
+branch = "main"
+role = "consumer"
+path = "/elsewhere/jubarte-app"
+"""
+
+
+def test_load_config_reads_repos(tmp_path: Path) -> None:
+    (tmp_path / "repos.toml").write_text(TOML)
+    cfg = load_config(tmp_path)
+    assert [r.name for r in cfg.repos] == ["ndb", "jubarte-app"]
+    assert cfg.repos[0].role == "producer"
+
+
+def test_default_path_is_root_slash_name(tmp_path: Path) -> None:
+    (tmp_path / "repos.toml").write_text(TOML)
+    cfg = load_config(tmp_path)
+    assert cfg.repos[0].local_path == tmp_path.resolve() / "ndb"
+
+
+def test_explicit_path_wins(tmp_path: Path) -> None:
+    (tmp_path / "repos.toml").write_text(TOML)
+    cfg = load_config(tmp_path)
+    assert cfg.repos[1].local_path == Path("/elsewhere/jubarte-app")
+
+
+def test_env_override_of_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    (tmp_path / "repos.toml").write_text(TOML)
+    monkeypatch.setenv("BENCH_ROOT", str(tmp_path))
+    cfg = load_config()
+    assert cfg.root == tmp_path.resolve()
+
+
+def test_unknown_role_rejected() -> None:
+    with pytest.raises(ValueError):
+        Repo(name="x", url="u", branch="main", role="bystander")
+
+
+def test_by_name(tmp_path: Path) -> None:
+    (tmp_path / "repos.toml").write_text(TOML)
+    cfg: Config = load_config(tmp_path)
+    assert cfg.by_name("ndb").url.endswith("neurotic_docx_bench.git")
+    with pytest.raises(KeyError):
+        cfg.by_name("nope")

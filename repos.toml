@@ -1,0 +1,29 @@
+# The four repositories of the bench system. `path` overrides <BENCH_ROOT>/<name>.
+
+[[repos]]
+name = "ndb"
+url = "https://github.com/jandira-tech/neurotic_docx_bench.git"
+branch = "main"
+role = "producer"
+path = "/Users/arthrod/temp/T/neurotic_docx_bench"
+
+[[repos]]
+name = "editors_trial"
+url = "https://github.com/arthrod/editors_trial.git"
+branch = "main"
+role = "producer"
+path = "/Users/arthrod/temp/T/editors_trial"
+
+[[repos]]
+name = "benchmarks-law"
+url = "https://github.com/arthrod/benchmarks-law.git"
+branch = "main"
+role = "consumer"
+path = "/Users/arthrod/temp/T/briefs_agreements/benchmarks-law"
+
+[[repos]]
+name = "jubarte-app"
+url = "https://github.com/arthrod/jubarte-app.git"
+branch = "main"
+role = "consumer"
+path = "/Users/arthrod/temp/T/1_jubarte-redlines/jubarte-app"
