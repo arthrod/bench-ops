@@ -1,4 +1,6 @@
 # bench-ops guards itself with local commands (uv run), so hook edits are testable before push.
+# The ledger job is the same one every linked repo runs (M4): it guards release/index.jsonl
+# in the producers and archive/index.jsonl here, in BENCH_ROOT.
 pre-commit:
   parallel: true
   jobs:
@@ -6,6 +8,8 @@ pre-commit:
       run: uv run bench hook size-guard {staged_files}
     - name: secrets
       run: uv run bench hook secrets {staged_files}
+    - name: ledger
+      run: uv run bench hook ledger
     - name: ruff
       glob: "*.py"
       run: uv run ruff check {staged_files}

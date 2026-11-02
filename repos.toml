@@ -9,8 +9,14 @@ path = "/Users/arthrod/temp/T/neurotic_docx_bench"
 
 [repos.release]
 hf_repo = "arthrod/neurotic_docx_bench"
+private = false  # the public record dataset (H2: visibility is checked, never assumed)
 before = ["uv run bench report --check", "uv run bench results upload"]
-files = ["results/scores.json"]
+files = [  # plan 3b: cases + speed beside the scores (results/release/ is git-ignored, written by `bench report`)
+  "results/scores.json",
+  "results/release/cases/index.json",
+  "results/release/cases/*/*.json",
+  "results/release/speed.json",
+]
 
 [[repos]]
 name = "editors_trial"
@@ -18,6 +24,11 @@ url = "https://github.com/arthrod/editors_trial.git"
 branch = "main"
 role = "producer"
 path = "/Users/arthrod/temp/T/editors_trial"
+
+[repos.release]           # plan 6 part A: the report bundle; benchmarks.law reads it at build time
+hf_repo = "arthrod/editors_trial-artifacts"
+private = true           # the trial documents are not for the public dataset (H2)
+files = ["out/facts.json", "out/release.json", "reports/*.md", "reports/*.docx", "?reports/figures/**"]  # figures may be absent in a given release (M1)
 
 [[repos]]
 name = "benchmarks-law"

@@ -25,6 +25,14 @@ class HubApi(Protocol):
 class WriteApi(HubApi, Protocol):
     """The write side `bench publish` needs (plan 2, C3): plus the two lookups resume uses."""
 
+    def repo_exists(self, repo: str) -> bool:
+        """Whether the dataset exists at all: publishing never creates repos (plan 6 A)."""
+        ...
+
+    def repo_is_private(self, repo: str) -> bool:
+        """The dataset's visibility (H2): checked, never assumed, before anything is written."""
+        ...
+
     def exists(self, repo: str, path: str, revision: str = "main") -> bool: ...
 
     def commit(self, repo: str, files: dict[str, Path], message: str) -> str:
@@ -71,6 +79,12 @@ class HfHub:
         return Path(hf_hub_download(repo, path, revision=revision, repo_type="dataset"))
 
     # ---- the write side, used by `bench publish` (plan 2) ---------------------------------
+
+    def repo_exists(self, repo: str) -> bool:
+        return self.api.repo_exists(repo, repo_type="dataset")
+
+    def repo_is_private(self, repo: str) -> bool:
+        return bool(self.api.repo_info(repo, repo_type="dataset").private)
 
     def exists(self, repo: str, path: str, revision: str = "main") -> bool:
         return self.api.file_exists(repo, path, revision=revision, repo_type="dataset")

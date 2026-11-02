@@ -6,9 +6,12 @@ Authority is unforgeable: `VerifiedManifest` exists only as the return value of
 content witness at the manifest's own revision. A local file is deletable iff its sha256 is
 listed by at least one verified manifest, by no unverified one, and is `served` in none —
 and it is not a file git tracks, not empty, and older than every manifest that lists it
-(M3). The delete itself re-stats the file and refuses anything that changed since it was
-hashed (M1), and candidates are resolved first: nothing inside a `.git` directory and
-nothing outside the linked repos is ever a candidate (M2).
+(M3). Outside the linked repos the rule is provenance, not content (M2): only a file an
+archive of that very tree lists at the same relative path is a candidate. The delete
+itself re-stats the file and refuses anything that changed since it was hashed (M1, and L7's
+re-open right before the unlink); candidates are resolved first: nothing inside a git
+directory — detected structurally, whatever it is named (M3) — and nothing outside the
+linked repos and archived trees is ever a candidate.
 """
 
 from __future__ import annotations
@@ -26,7 +29,7 @@ from pydantic import ValidationError
 
 from bench_ops.gitx import git
 from bench_ops.hf import HubApi, verify_manifest
-from bench_ops.models import LedgerEntry, Manifest
+from bench_ops.models import LedgerEntry, Manifest, manifest_path
 
 EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
 
@@ -43,12 +46,15 @@ class VerifiedManifest:
 
 
 def fetch_verified(entry: LedgerEntry, hub: HubApi) -> VerifiedManifest | None:
-    """None when any check fails — always before any gc decision is made from it."""
-    path = f"release/{entry.tag}/manifest.json"
-    try:
-        local = hub.download(entry.hf.repo, entry.hf.revision, path)
-    except Exception:  # noqa: BLE001 -- any hub failure (missing revision, network) fails closed
-        return None
+    """None when any check fails — always before any gc decision is made from it.
+
+    A *hub error* (network, 53, missing revision) is not a check failure: it propagates,
+    because `bench gc` must say so and stop (M7) instead of quietly treating the record as
+    unverified. Only genuine verification failures (sha mismatch, wrong tag, witness not
+    ok) return None, which makes the listed shas undeletable — fail closed.
+    """
+    path = manifest_path(entry.tag)  # release/<tag>/ or archive/<name>/ (plan 6 C)
+    local = hub.download(entry.hf.repo, entry.hf.revision, path)
     data = local.read_bytes()
     if hashlib.sha256(data).hexdigest() != entry.manifest_sha256:  # the bytes we parse (N3)
         return None
@@ -103,6 +109,38 @@ def tracked_in(roots: list[Path]) -> Callable[[Path], bool]:
     return tracked
 
 
+def _aware(dt: datetime) -> datetime:
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
+
+
+def _looks_like_git_dir(d: Path) -> bool:
+    """M3: structural — HEAD + objects/ + refs/, whatever the directory is called."""
+    try:
+        return (d / "HEAD").is_file() and (d / "objects").is_dir() and (d / "refs").is_dir()
+    except OSError:  # a permission error must read as "not a git dir I can vouch for"…
+        return False                 # …and the name/path checks below still apply
+
+
+def _inside_git_dir(path: Path, resolved: Path) -> Path | None:
+    """The git directory `path` lives in, or None. Detected structurally (M3): a directory
+    holding HEAD + objects/ + refs/ — named `.git` or not (`git init --separate-git-dir`
+    calls it something else) — or a `gitdir:` pointer file (a linked worktree's `.git`).
+    The `.git` path component stays as a fast path, so a partial layout protects too."""
+    if ".git" in resolved.parts:
+        i = resolved.parts.index(".git")
+        return Path(*resolved.parts[: i + 1])
+    try:  # the pointer file itself: a linked worktree's .git is a file, not a directory
+        with path.open("rb") as fh:
+            if fh.read(7) == b"gitdir:":
+                return path
+    except OSError:
+        pass
+    for ancestor in (resolved, *resolved.parents):
+        if _looks_like_git_dir(ancestor):
+            return ancestor
+    return None
+
+
 def _sha256_fd(fd: int) -> str:
     """Hash the open file, by the descriptor, without touching the path again (M1)."""
     h = hashlib.sha256()
@@ -113,8 +151,16 @@ def _sha256_fd(fd: int) -> str:
     return h.hexdigest()
 
 
-def _aware(dt: datetime) -> datetime:
-    return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
+def _archive_hit(vms: list[VerifiedManifest], root: Path, resolved: Path, sha: str) -> str | None:
+    """M2: provenance — a manifest of an archive rooted at `root` lists this very path
+    (`archive/<name>/<rel>`) with these bytes. Content elsewhere is never a witness."""
+    rel = resolved.relative_to(root).as_posix()
+    for vm in vms:
+        prefix = vm.manifest.r2_prefix
+        for f in vm.manifest.files:
+            if f.path == f"{prefix}{rel}" and f.sha256 == sha:
+                return vm.manifest.tag
+    return None
 
 
 def verdicts(
@@ -123,11 +169,17 @@ def verdicts(
     unverified_shas: set[str],
     roots: list[Path] | None = None,
     tracked: Callable[[Path], bool] | None = None,
+    archives: dict[Path, list[VerifiedManifest]] | None = None,
 ) -> list[Verdict]:
     """One Verdict per path. Directories, symlinks and other non-regular files get a keep
-    verdict with their reason (N7); nothing under .git/ or outside `roots` is a candidate
-    (M2, resolved paths); empty, git-tracked and fresher-than-the-manifest files are never
-    collected (M3)."""
+    verdict with their reason (N7); nothing inside a git directory (however it is named,
+    M3) or outside `roots` and the archived trees is a candidate (M2, resolved paths);
+    empty, git-tracked and fresher-than-the-manifest files are never collected (M3).
+
+    Files inside the linked repos follow the content rule (their sha256 is listed). Files
+    only under an archived root follow the provenance rule (M2): deletable only when that
+    very tree's archive lists them at the same relative path — bytes that happen to match
+    some other manifest authorise nothing."""
     listing: dict[str, list[str]] = {}
     served: dict[str, list[str]] = {}
     created: dict[str, datetime] = {}
@@ -140,6 +192,7 @@ def verdicts(
                 created[f.sha256] = vm.manifest.created
 
     resolved_roots = [r.resolve() for r in roots] if roots is not None else None
+    archive_roots = {r.resolve(): vms for r, vms in (archives or {}).items()}
 
     def keep(p: Path, reason: str, sha: str = "", tags: tuple[str, ...] = (),
              ident: Stat | None = None) -> Verdict:
@@ -151,13 +204,20 @@ def verdicts(
             out.append(keep(p, "symlink — skipped"))
             continue
         resolved = p.resolve()  # through symlinked directories, before any test (M2)
-        if resolved_roots is not None and not any(
+        under_linked = resolved_roots is None or any(
             resolved.is_relative_to(r) for r in resolved_roots
-        ):
-            out.append(keep(p, "outside the linked repos; never collected"))
+        )
+        archive_root = None
+        if not under_linked and archive_roots:
+            archive_root = next(
+                (r for r in archive_roots if resolved.is_relative_to(r)), None
+            )
+        if not under_linked and archive_root is None:
+            out.append(keep(p, "outside the linked repos and archived trees; never collected"))
             continue
-        if ".git" in resolved.parts:
-            out.append(keep(p, "under .git; never collected"))
+        git_dir = _inside_git_dir(p, resolved)  # M3: structural, not the name
+        if git_dir is not None:
+            out.append(keep(p, f"inside the git directory {git_dir}; never collected"))
             continue
         try:  # O_NONBLOCK: a FIFO must not hang the open; O_NOFOLLOW: the final component
             fd = os.open(p, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
@@ -176,11 +236,20 @@ def verdicts(
         finally:
             os.close(fd)
         ident: Stat = (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
-        tags = tuple(dict.fromkeys(listing.get(sha, [])))
+        if not under_linked and archive_root is not None:
+            hit = _archive_hit(archive_roots[archive_root], archive_root, resolved, sha)
+            tags = (hit,) if hit is not None else ()
+        else:
+            tags = tuple(dict.fromkeys(listing.get(sha, [])))
         if st.st_size == 0 or sha == EMPTY_SHA256:  # one empty entry would empty every file
             out.append(keep(p, "0 bytes; never collected", sha, tags, ident))
         elif not tags:
-            out.append(keep(p, "not listed by any verified manifest", sha, tags, ident))
+            reason = (
+                "not listed at this path by a verified archive of this tree"
+                if not under_linked
+                else "not listed by any verified manifest"
+            )
+            out.append(keep(p, reason, sha, tags, ident))
         elif sha in served:
             out.append(keep(p, f"served by R2 ({', '.join(served[sha])})", sha, tags, ident))
         elif sha in unverified_shas:
@@ -193,3 +262,32 @@ def verdicts(
         else:
             out.append(Verdict(p, sha, tags, True, f"verified on HF ({', '.join(tags)})", ident))
     return out
+
+
+def safe_unlink(v: Verdict) -> bool:
+    """L7: delete the verified file, or refuse it. Right before the unlink the path is
+    re-opened with O_NOFOLLOW (a symlink swapped in where the file was fails the open) and
+    fstat'd on that very descriptor; the (dev, inode, size, mtime_ns) must still be the
+    pinned stat the bytes were hashed from. Anything else — replaced, rewritten in place,
+    gone — keeps the file and returns False.
+
+    Residual window, on purpose documented rather than hidden: between this fstat and the
+    unlink the path is still reachable, so a swap in that instant could still be unlinked
+    by name. Closing it needs an unlink-by-inode (unlinkat on an O_TMPFILE'd fd), which
+    python's os module does not expose; the pinned-stat re-check narrows the window to two
+    adjacent syscalls, exactly as M1 intended."""
+    try:
+        fd = os.open(v.path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        return False
+    try:
+        st = os.fstat(fd)
+        if (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns) != v.stat:
+            return False
+    finally:
+        os.close(fd)
+    try:
+        v.path.unlink()
+    except OSError:
+        return False
+    return True

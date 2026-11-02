@@ -35,3 +35,7 @@ Satellites are the loose copies beside the checkouts (`ndb-105`, `ndb-apryse`, `
 - `bench status` shows both producers verified on HF after the first real publishes.
 - `bench work` on today's `.work/` lists every worktree with a reason, removes nothing without `--yes`.
 - Satellites leave `~/temp/T` only after the two witnesses and Arthur's yes.
+
+## Status
+
+Implemented on branch `plan6` (2026-11-02): part A (the `[repos.release]` section for editors_trial; publish refuses a missing HF dataset instead of creating one), part B (`bench work`), part C (`bench archive`, `arc-[a-z0-9-]+` tags, gc over archive manifests, `bench gc <dir>`). Still to come: the first real publishes/archive and the editors_trial RELEASING.md step.

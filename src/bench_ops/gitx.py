@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 # Set by git for hooks; inherited, they would redirect every call to the hooked repository.
@@ -74,17 +74,45 @@ def status(repo: Path) -> GitStatus:
     return GitStatus(branch=branch, dirty=dirty, head=head)
 
 
+@dataclass(frozen=True)
+class Worktree:
+    """One entry of `git worktree list --porcelain` (L6): the locked/prunable lines git
+    prints are parsed, not ignored — a locked worktree is never a removal candidate."""
+
+    path: Path
+    locked: bool = False
+    prunable: bool = False
+
+
+def worktree_list(repo: Path) -> list[Worktree]:
+    """Every registered worktree, the main checkout first (as git lists it)."""
+    if not (repo / ".git").exists():
+        return []
+    out: list[Worktree] = []
+    cur: Worktree | None = None
+    for ln in git(repo, "worktree", "list", "--porcelain").splitlines():
+        if ln.startswith("worktree "):
+            if cur is not None:
+                out.append(cur)
+            cur = Worktree(path=Path(ln.split(" ", 1)[1]))
+        elif cur is None:
+            continue
+        elif ln.startswith("locked"):
+            cur = replace(cur, locked=True)
+        elif ln.startswith("prunable"):
+            cur = replace(cur, prunable=True)
+    if cur is not None:
+        out.append(cur)
+    return out
+
+
 def worktrees(repo: Path) -> list[Path]:
-    """Worktrees other than the main checkout.
+    """Worktree paths other than the main checkout.
 
     git lists the main worktree first. Comparing paths instead would misfire for submodules,
     whose main worktree git reports as the module's git dir (.git/modules/<name>).
     """
-    if not (repo / ".git").exists():
-        return []
-    lines = git(repo, "worktree", "list", "--porcelain").splitlines()
-    paths = [Path(ln.split(" ", 1)[1]) for ln in lines if ln.startswith("worktree ")]
-    return paths[1:]
+    return [w.path for w in worktree_list(repo)[1:]]
 
 
 def origin_url(repo: Path) -> str | None:

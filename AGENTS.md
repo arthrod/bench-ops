@@ -35,7 +35,9 @@ git clone https://github.com/arthrod/bench-ops ~/bench
 uv tool install --editable ~/bench          # the `bench` command; elsewhere: uv tool install git+https://github.com/arthrod/bench-ops
 brew install lefthook ripsecrets
 bench sync                                  # clone/fast-forward every repo, install hooks; exits 1 on HOOKS NOT ACTIVE
-bench status                                # branch, dirt, stray worktrees, release ledger per repo (--offline skips HF)
+bench status                                # branch, dirt, stray worktrees, release ledger per repo (--offline skips HF); the `.work/` pen is not "stray"
+bench work                                  # list `.work/` worktrees; `--yes` removes one only when NOTHING of it can be lost: no tracked change, no untracked file, no git-ignored byte (`git status --porcelain --ignored --untracked-files=all` empty), not locked, inside the pen, and both clocks (worktree creation and last commit) older than the TTL — via `git worktree remove`, never `--force`. Verdicts run after `git fetch --prune origin` (one per parent repo), never on a stale remote-tracking ref; `--offline` skips the fetch and then removes nothing
+bench archive <dir> <name>                  # snapshot a satellite (working tree **and** `.git`, untracked included) to the private `arthrod/neurotic_docx_bench-archive` dataset under `archive/<name>/`, tag `arc-<name>`, one line in `archive/index.jsonl` plus a manifest copy in `archive/<name>/`; symlinks are recorded in a `symlinks.json` sidecar. Refuses a public dataset and any file the ripsecrets scan flags (`--exclude GLOB` drops paths, recorded in the manifest). Resumable: a run that died mid-way is finished on rerun, never redone; a changed tree is refused. Then `bench gc <dir> --yes` may delete local files that THIS archive lists at the same relative path once its manifest verifies on HF — provenance, not bytes-that-match-anywhere (the git directory itself, however it is named, stays for hand removal)
 ```
 
 Per-repo tooling the steps below need: `uv` (Python 3.14), `pnpm`, LibreOffice and Microsoft Word on macOS (ndb oracle and the Word gates), `wrangler` (`bunx wrangler login`, the token lives about an hour), `hf auth login`, `gh auth login`. Secrets stay in each repo's git-ignored `.env`; check their length, never print them.
@@ -48,7 +50,7 @@ All four run on **pre-commit**, in about a second, from `bench-ops/lefthook/comm
 
 - `size guard`: no file over 2 MB, no binaries under `results/`, `out/`, `public/fixtures/`, `public/neurotic-docx-bench/`, `.bench/`.
 - `secrets`: ripsecrets on the staged files.
-- `ledger`: `release/index.jsonl` may only grow — `bench hook ledger` refuses staged rewrites, deletions and renames of the ledger. No glob: it runs on every commit, because lefthook's glob file lists exclude deletions and would skip the job exactly when it is needed.
+- `ledger`: the ledgers may only grow — `release/index.jsonl` in the producers and `archive/index.jsonl` in BENCH_ROOT (bench-ops' own `lefthook.yml` runs the job too) — `bench hook ledger` refuses staged rewrites, deletions and renames of either. No glob: it runs on every commit, because lefthook's glob file lists exclude deletions and would skip the job exactly when it is needed.
 - `release state`: `bench status --fail-on-stale` refuses a commit while the repo's `bench.lock` is behind its producer's latest release (no-op until the lock exists).
 
 Escape hatches: `LEFTHOOK=0 git commit …`, `BENCH_ALLOW_STALE=1 git commit …`. Change hooks only in `bench-ops/lefthook/common.yml`. Never add pre-push or post-* hooks there: they belong to git-lfs, and lefthook owning them makes pushes from older ndb branches skip LFS uploads (`tests/test_lefthook_config.py` enforces this). A branch created before the hook PRs (2026-11-02) carries the old file; merge `main` into it and run `bench sync`.
@@ -90,7 +92,7 @@ Follow `editors_trial/RELEASING.md` top to bottom and tick it in the release's t
 | C2 | Facts and reports | `python3 build/facts.py`; `python3 build/render_reports.py --stale out/facts-v<previous>.json`; `--all-twins`; `--check`; copy `out/facts.json` to `out/facts-vX.Y.Z.json` | every sentence about a moved fact re-read; nothing typed by hand | |
 | C3 | Demos whose pin moved | `build/rebuild_demo.sh <slug>` | each demo opened in a real browser | |
 | C4 | Gate | `python3 -m unittest discover -s build -p "test_*.py"`; `build/verify_publication.sh --with-word` **twice** | no `WRONG-DOCUMENT`/`ORACLE-NOT-CLEAN`; every `.docx` Word valid | |
-| C5 | Publish the trial | CHANGELOG section, PR to `main`, merge, tag `vX.Y.Z`, GitHub release | | |
+| C5 | Publish the trial | CHANGELOG section, PR to `main`, merge, tag `vX.Y.Z`, GitHub release, then `bench publish editors_trial et-vX.Y.Z` (report bundle to the private `arthrod/editors_trial-artifacts` dataset; push the ledger commit and tag it prints) | bundle on HF, tag `et-vX.Y.Z`; `bench status` shows it verified | |
 | C6 | Publish the site | in `benchmarks-law` on up-to-date `main`: `pnpm sync:content`, `pnpm sync:vendors`, `pnpm sync:assets`, `pnpm sync:demos` (if a demo was rebuilt), `pnpm run deploy` (needs `EMDASH_TOKEN`; `REPORTS_ROOT` defaults to `../../editors_trial`) | https://benchmarks.law home, `/editors-trial/`, vendors, every report and demo checked in a real browser | `bench deploy benchmarks-law` (Plan 2 rev 3) |
 | C7 | Close out | commit the site, PR, merge, tag with the same version; close the issues | | |
 
@@ -109,7 +111,9 @@ Both sites must show the same figures for the same bench version: jubarte.pro (p
 
 - Never edit a generated file (`RESULTS*.md`, `out/facts.json`, rendered reports, `data/facts.jsonl` by hand). Change the measurement or the template and regenerate.
 - The JSONL stores are append-only; never rewrite or reorder them.
-- No binaries in git: heavy outputs go to HF (record) and R2 (served copy). Delete local data only after both are verified.
+- No binaries in git: heavy outputs go to HF (record) and R2 (served copy). Delete local data only after both are verified. Satellites (`ndb-105`, `ndb-apryse`, root `*.log`) leave `~/temp/T` only through `bench archive` + `bench gc`, after the two witnesses and Arthur's yes.
+- `bench gc` deletes outside the linked repos only what an archive of that very tree lists at the same path (the manifest records the archived root); it refuses `/`, `$HOME`, BENCH_ROOT and any parent of a linked repo as a target, and re-checks each file (O_NOFOLLOW + fstat against the pinned stat) right before the unlink.
+- `bench work` is allowed to remove a worktree only when it holds no byte that exists nowhere else (ignored and untracked included); a fresh worktree on an old branch is young — its TTL clock starts at its creation, not at the branch's last commit.
 - Word validity is checked in Word itself (`open file.docx`): no warning, no repair offer.
 - Websites are checked in a real browser, not only with curl.
 - One Hugging Face upload batch per many files: the hub allows 320 commits an hour.

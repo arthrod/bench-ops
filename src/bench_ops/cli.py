@@ -14,16 +14,24 @@ from pydantic import ValidationError
 from rich.console import Console
 from rich.table import Table as RichTable
 
+from bench_ops.archive import archive as archive_release
 from bench_ops.config import Config, load_config
-from bench_ops.gc import VerifiedManifest, fetch_verified, tracked_in, verdicts
+from bench_ops.gc import (
+    VerifiedManifest,
+    fetch_verified,
+    safe_unlink,
+    tracked_in,
+    verdicts,
+)
 from bench_ops.gitx import clone_or_pull, git, origin_url
 from bench_ops.hf import HfHub, Witness, sha256_of, verify_manifest
 from bench_ops.hooks import secrets_command, size_guard
 from bench_ops.ledger import check_ledger
-from bench_ops.models import LedgerEntry, Lock, Manifest, dumps
+from bench_ops.models import LedgerEntry, Lock, Manifest, dumps, manifest_path
 from bench_ops.publish import PublishError, run_script
 from bench_ops.publish import publish as publish_release
 from bench_ops.status import latest_tags, report
+from bench_ops.work import parse_duration, remove, scan
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
 hook_app = typer.Typer(no_args_is_help=True, help="Hooks run by lefthook (see lefthook/common.yml).")
@@ -117,13 +125,14 @@ def status(
         repos = [found]
     latest = latest_tags(cfg.repos)
     witness = None if offline else _witness_via_hf
+    pen = cfg.root / ".work"  # L5: the pen bench work drains is not stray debris
     table = RichTable(title="bench status")
     for col in ("repo", "role", "branch", "dirty", "stray worktrees", "release", "witness"):
         table.add_column(col, overflow="fold")
     stale = False
     broken = False
     for r in repos:
-        rep = report(r, latest, witness)
+        rep = report(r, latest, witness, pen=pen)
         stale |= rep.stale
         broken |= rep.broken
         cell = f"BROKEN: {rep.witness}" if rep.broken else (rep.witness or "-")
@@ -271,26 +280,67 @@ def deploy_cmd(
         raise typer.Exit(code)
 
 
+def _refuse_wild_gc_targets(targets: list[Path], linked: list[Path], bench_root: Path) -> None:
+    """L4: gc's reach must stay bounded. A target that is the filesystem root, $HOME,
+    BENCH_ROOT itself, or a parent of a linked repo makes every verified byte on the
+    machine a candidate — refuse it before anything is hashed or deleted."""
+    home = Path.home().resolve()
+    root = bench_root.resolve()
+    linked_resolved = [r.resolve() for r in linked]
+    for t in targets:
+        r = t.resolve()
+        why: str | None = None
+        if r == Path("/"):
+            why = "the filesystem root"
+        elif r == home:
+            why = "$HOME"
+        elif r == root:
+            why = "BENCH_ROOT itself"
+        else:
+            why = next(
+                (
+                    f"a parent of the linked repo {lr}"
+                    for lr in linked_resolved
+                    if lr != r and lr.is_relative_to(r)
+                ),
+                None,
+            )
+        if why is not None:
+            console.print(f"[red]refusing to gc {t}: it is {why}[/]")
+            raise typer.Exit(1)
+
+
 @app.command("gc")
 def gc_cmd(
-    paths: Annotated[list[Path], typer.Argument(help="Local files to consider deleting.")],
+    paths: Annotated[list[Path], typer.Argument(help="Local files (or directories) to consider deleting.")],
     yes: Annotated[
         bool, typer.Option(help="Actually delete; without it gc only reports.")
     ] = False,
 ) -> None:
-    """Delete local files whose bytes the Hub records in a verified release manifest (plan 2).
+    """Delete local files whose bytes the Hub records in a verified manifest (plans 2 and 6).
 
-    The Hub is the only authority: every ledger line is verified against it, a served file is
-    never deleted, and nothing under .git/ is touched.
+    The Hub is the only authority: every ledger line — each producer's
+    release/index.jsonl and BENCH_ROOT/archive/index.jsonl — is verified against it, a
+    served file is never deleted, and nothing inside a git directory is touched, however
+    that directory is named (its .git stays for hand removal once the verdict output has
+    been read). A directory argument is expanded to its files; when the directory is not a
+    linked repo, only files an archive of that very tree lists at the same path are
+    candidates (M2: provenance, not bytes-that-match-anywhere).
     """
     cfg = _config()
-    hub = HfHub()
     roots = [r.local_path for r in cfg.repos]  # candidates must live in a linked repo (M2)
+    passed = [p if p.is_absolute() else Path.cwd() / p for p in paths]
+    _refuse_wild_gc_targets(passed, roots, cfg.root)  # L4: before any hashing
+    hub = HfHub()
     tracked = tracked_in(roots)  # and never be a file git tracks (M3)
     verified: list[VerifiedManifest] = []
     unverified: set[str] = set()  # fail closed: these shas are never deletable
-    for repo in cfg.by_role("producer"):
-        ledger = repo.local_path / "release" / "index.jsonl"
+    sources: list[tuple[Path, str]] = [
+        *((r.local_path, "release/index.jsonl") for r in cfg.by_role("producer")),
+        (cfg.root, "archive/index.jsonl"),  # plan 6 C: archive manifests are witnesses too
+    ]
+    for base, rel_ledger in sources:
+        ledger = base / rel_ledger
         if not ledger.exists():
             continue
         lines = [ln for ln in ledger.read_text().splitlines() if ln.strip()]
@@ -298,13 +348,20 @@ def gc_cmd(
             try:
                 entry = LedgerEntry.from_line(line)
             except ValidationError:
-                console.print(f"[red]{repo.name}: ledger line {i} is not a ledger entry[/]")
+                console.print(f"[red]{ledger}: line {i} is not a ledger entry[/]")
                 raise typer.Exit(1) from None
-            vm = fetch_verified(entry, hub)
+            try:
+                vm = fetch_verified(entry, hub)
+            except Exception as e:  # noqa: BLE001 -- M7: one red line, never a traceback
+                console.print(
+                    f"witness failed for {entry.tag}: {type(e).__name__}: {e}",
+                    style="red", markup=False, highlight=False,
+                )
+                raise typer.Exit(1) from None
             if vm is not None:
                 verified.append(vm)
             else:
-                local = repo.local_path / "release" / entry.tag / "manifest.json"
+                local = base / manifest_path(entry.tag)
                 if local.exists():  # untrusted bytes, but its shas must block deletes
                     try:
                         unverified.update(
@@ -313,18 +370,134 @@ def gc_cmd(
                         )
                     except ValidationError:
                         pass
-    targets = [p if p.is_absolute() else Path.cwd() / p for p in paths]
-    for v in verdicts(targets, verified, unverified, roots=roots, tracked=tracked):
+    archives: dict[Path, list[VerifiedManifest]] = {}  # M2: archived root -> its manifests
+    for vm in verified:
+        if vm.manifest.archived_root:
+            archives.setdefault(Path(vm.manifest.archived_root).resolve(), []).append(vm)
+    targets: list[Path] = []
+    for p in passed:
+        # The directory stays a target (reported as skipped — gc deletes files, not dirs)
+        # and its files are considered one by one: that is how an archived satellite is
+        # collected, without making `bench gc out/` silently say nothing (N7).
+        targets.append(p)
+        if p.is_dir():
+            targets += sorted(q for q in p.rglob("*") if q.is_file() or q.is_symlink())
+    for v in verdicts(targets, verified, unverified, roots=roots, tracked=tracked,
+                      archives=archives):
         if yes and v.deletable:
-            if not v.current():  # changed between hashing and this unlink (M1)
+            if safe_unlink(v):  # L7: re-opened, fstat'd, compared with the pinned stat
+                console.print(f"[red]deleted[/] {v.path}  ·  {v.reason}")
+            else:  # changed (or swapped for a symlink) between hashing and this unlink (M1)
                 console.print(f"[yellow]keep[/] {v.path}  ·  changed since hashing; not deleted")
-                continue
-            v.path.unlink()
-            console.print(f"[red]deleted[/] {v.path}  ·  {v.reason}")
         else:
             style = "green" if v.deletable else "yellow"
             word = "deletable" if v.deletable else "keep"
             console.print(f"[{style}]{word}[/] {v.path}  ·  {v.reason}")
+
+
+@app.command("work")
+def work_cmd(
+    older_than: Annotated[
+        str, typer.Option(help="Removal TTL, e.g. 14d or 6h (worktree creation AND last commit).")
+    ] = "14d",
+    yes: Annotated[
+        bool, typer.Option(help="Actually remove; without it bench only lists.")
+    ] = False,
+    offline: Annotated[
+        bool, typer.Option(help="Skip the origin fetch; never removes anything.")
+    ] = False,
+) -> None:
+    """List the worktrees under BENCH_ROOT/.work and remove the stale ones (plan 6 B).
+
+    A worktree leaves only when it is older than the TTL on both clocks (its creation and
+    its last commit), holds nothing git-ignored or untracked, is not locked, and its HEAD
+    is reachable from origin's default branch or its branch was pushed there — verified
+    against a fresh `git fetch --prune origin`, never a stale remote-tracking ref (M5).
+    With --yes it goes through `git worktree remove` (never --force). Everything else is
+    listed with the reason it stays. --offline skips the fetch and then never removes.
+    """
+    cfg = _config()
+    try:
+        ttl = parse_duration(older_than)
+    except ValueError as e:
+        console.print(f"[red]{e}[/]")
+        raise typer.Exit(2) from None
+    now = datetime.now(UTC)
+    infos = scan(cfg.root / ".work", cfg.repos, ttl=ttl, now=now, fetch=not offline)
+    if not infos:
+        console.print(f"no worktrees under {cfg.root / '.work'}")
+        return
+    if offline:
+        console.print("[yellow]offline: origin refs were not fetched; nothing is removed[/]")
+    for info in infos:
+        age = f"{(now - info.last_commit).days}d" if info.last_commit is not None else "?"
+        line = f"{info.path.name:<24} branch={info.branch:<18} age={age:<6} dirty={info.dirty}"
+        if info.removable:
+            if offline:  # M5: without the fetch no verdict justifies a removal
+                console.print(f"[yellow]would remove[/] {line}  ·  --offline never removes")
+            elif not yes:
+                console.print(
+                    f"[yellow]would remove[/] {line}  ·  old, clean, merged or pushed (needs --yes)"
+                )
+            else:
+                try:
+                    remove(info)
+                except (subprocess.CalledProcessError, ValueError) as e:
+                    console.print(f"[yellow]keep[/] {line}  ·  git worktree remove refused: {e}")
+                else:
+                    console.print(f"[red]removed[/] {line}")
+        else:
+            console.print(f"[yellow]keep[/] {line}  ·  {'; '.join(info.reasons)}")
+
+
+@app.command("archive")
+def archive_cmd(
+    directory: Annotated[Path, typer.Argument(help="The satellite directory to snapshot.")],
+    name: Annotated[str, typer.Argument(help="Archive name, [a-z0-9-]+ (the tag is arc-<name>).")],
+    yes: Annotated[
+        bool, typer.Option(help="Actually publish; without it bench prints the summary only.")
+    ] = False,
+    exclude: Annotated[
+        list[str] | None, typer.Option("--exclude", help="Drop staged paths matching this "
+        "glob (repeatable), e.g. --exclude .env; recorded in the manifest.")
+    ] = None,
+) -> None:
+    """Snapshot a satellite directory to the private archive dataset (plan 6 C).
+
+    The whole tree goes to arthrod/neurotic_docx_bench-archive under archive/<name>/ — the
+    working tree (untracked and modified files included) *and* the .git directory, so
+    history survives; symlinks are recorded in an archive/<name>/symlinks.json sidecar.
+    The dataset must exist and be private, and the staged set must pass the secrets scan
+    (use --exclude to drop paths). The HF tag is arc-<name>; one line lands in
+    BENCH_ROOT/archive/index.jsonl and a copy of the manifest in BENCH_ROOT/archive/<name>/.
+    `bench gc <dir>` may then delete local files once that manifest verifies on HF — and
+    only files this very archive lists. Resumable: a run that died after the manifest
+    commit is finished, never redone. Without --yes, only the summary is printed.
+    """
+    cfg = _config()
+    try:
+        m = archive_release(
+            directory.resolve(), name, HfHub(), now=datetime.now(UTC), yes=yes,
+            bench_root=cfg.root, excludes=tuple(exclude or ()),
+        )
+    except PublishError as e:
+        console.print(str(e), style="red", markup=False, highlight=False)
+        raise typer.Exit(1) from None
+    except Exception as e:  # noqa: BLE001 -- a failed archive is a message, never a traceback
+        console.print(f"[red]{type(e).__name__}: {e}[/]", markup=False, highlight=False)
+        raise typer.Exit(1) from None
+    if yes:
+        console.print(
+            f"commit the ledger: git -C {cfg.root} add archive/index.jsonl "
+            f"archive/{m.tag[4:]}/ && "
+            f"git -C {cfg.root} commit -m 'archive: {m.tag}'"
+        )
+    else:
+        total = sum(f.bytes for f in m.files)
+        console.print(
+            f"{m.tag}: {len(m.files)} files, {total} bytes (dry run — nothing written; "
+            "rerun with --yes)"
+        )
 
 
 StagedFiles = Annotated[list[Path] | None, typer.Argument(help="Staged files (from lefthook).")]
@@ -357,7 +530,7 @@ def hook_secrets(files: StagedFiles = None) -> None:
         raise typer.Exit(rc)
 
 
-LEDGER = "release/index.jsonl"
+LEDGERS = ("release/index.jsonl", "archive/index.jsonl")  # M4: every ledger, not one
 
 
 def _git_text(repo: Path, *args: str, hook: bool = False) -> str | None:
@@ -369,26 +542,35 @@ def _git_text(repo: Path, *args: str, hook: bool = False) -> str | None:
 
 @hook_app.command("ledger")
 def hook_ledger() -> None:
-    """Refuse anything but an append to release/index.jsonl (D7/D14, C1/C2).
+    """Refuse anything but an append to the ledgers (D7/D14, C1/C2, M4).
 
     Runs on every commit (lefthook must not glob-gate it: staged deletions and renames are
-    exactly what `git diff --cached --name-status -M` catches). The staged blob is read
-    from the index git will commit — GIT_INDEX_FILE is kept, so for a path-limited commit
-    (`git commit -- release/index.jsonl`) the bytes validated are the bytes committed —
-    and compared with HEAD's.
+    exactly what `git diff --cached --name-status -M` catches). Both ledgers it knows about
+    are guarded — release/index.jsonl in the producers and archive/index.jsonl in
+    BENCH_ROOT (the bench-ops repo; elsewhere the path is simply absent and the check
+    passes). The staged blob is read from the index git will commit — GIT_INDEX_FILE is
+    kept, so for a path-limited commit (`git commit -- release/index.jsonl`) the bytes
+    validated are the bytes committed — and compared with HEAD's.
     """
     cwd = Path.cwd()
-    staged = _git_text(cwd, "show", f":{LEDGER}", hook=True)
-    if staged is None:  # not in the index: a deletion/rename, or nothing staged
-        diff = _git_text(cwd, "diff", "--cached", "--name-status", "-M", "--", LEDGER,
-                         hook=True) or ""
-        if any(ln.split("\t")[0].startswith(("D", "R")) for ln in diff.splitlines()):
-            console.print(f"[red]{LEDGER} may only grow: staged deletions and renames are refused[/]")
-            raise typer.Exit(1)
-        return
-    problems = check_ledger(_git_text(cwd, "show", f"HEAD:{LEDGER}", hook=True), staged)
-    for p in problems:
-        console.print(f"[red]{p}[/]")
-    if problems:
-        console.print(f"[red]{LEDGER} is append-only (bench-ops docs/CONTRACT.md)[/]")
+    failed = False
+    for ledger in LEDGERS:
+        staged = _git_text(cwd, "show", f":{ledger}", hook=True)
+        if staged is None:  # not in the index: a deletion/rename, or nothing staged
+            diff = _git_text(cwd, "diff", "--cached", "--name-status", "-M", "--", ledger,
+                             hook=True) or ""
+            if any(ln.split("\t")[0].startswith(("D", "R")) for ln in diff.splitlines()):
+                console.print(
+                    f"[red]{ledger} may only grow: staged deletions and renames are "
+                    "refused — it is append-only[/]"
+                )
+                failed = True
+            continue
+        problems = check_ledger(_git_text(cwd, "show", f"HEAD:{ledger}", hook=True), staged)
+        for p in problems:
+            console.print(f"[red]{p}[/]")
+        if problems:
+            console.print(f"[red]{ledger} is append-only (bench-ops docs/CONTRACT.md)[/]")
+            failed = True
+    if failed:
         raise typer.Exit(1)
