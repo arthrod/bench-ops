@@ -10,6 +10,19 @@ Every byte the benches produce has exactly one role per surface. If you cannot n
 | **Workers / GitHub Pages** | apps and viewers | point at R2; never embed data that is not in a tagged release |
 | **Local disk** `~/bench/.work/<repo>/<run>` | scratch | deletable only by the two-witness rule |
 
+## The Hugging Face datasets (surveyed 2026-11-02)
+
+None of these is a copy of another; each holds bytes the others lack (sha256 cross-check of LFS files against the record). Do not "freeze" or delete one as redundant.
+
+| Dataset | Visibility | Holds | LFS files also in the record |
+|---|---|---|---|
+| `arthrod/neurotic_docx_bench` | public | **the record**: runs, results, `site/` fixtures, `release/<tag>/` (67,715 files, 14.2 GB) | n/a |
+| `arthrod/neurotic_docx_bench-fixtures` | public | the corpus (DOCX/PDF oracle tree), `bench fixtures download` | 1,332 of 4,709 |
+| `arthrod/neurotic_docx_bench-history` | public | files removed from git history, with `manifest.tsv` | 9 of 1,072 |
+| `arthrod/neurotic-docx-bench-artifacts` | public | working evidence that is not corpus (`really_broken/`, `from_jubarte-redlines/`) | 80 of 584 |
+| `arthrod/neurotic_docx_bench-git-archive` | private | git bundles of ndb from the 2026-10-25 rewrite, filter-repo maps, D1 exports | 0 of 4 |
+| `arthrod/neurotic-docx-backup` | private | the pre-rewrite bundle of 2026-10-22 | 0 of 1 |
+
 ## Two witnesses before any delete
 
 A local file may be deleted only when its sha256 is listed in a release manifest **and** that manifest has been verified against Hugging Face (`bench status` witness; `bench gc` in Plan 2), and against R2 too if the file is served. This is the rule that would have kept the grok_run outputs lost in October 2026.
