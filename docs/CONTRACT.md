@@ -30,13 +30,13 @@ A local file may be deleted only when its sha256 is listed in a release manifest
 ## Releases
 
 - Producers publish `release/<tag>/{manifest.json, scores.json, cases/*.json}` to HF and append one line to `release/index.jsonl` (`LedgerEntry`). Tags: `ndb-vX.Y.Z[.n]`, `et-vX.Y.Z`.
-- Every release stays recorded: the ledger only grows, and each tag's manifest stays on HF at its pinned revision.
+- Every release stays recorded: the ledger only grows, and each tag's manifest stays on HF at its pinned revision. The producer hook (`bench hook ledger`) refuses a rewritten, removed or duplicated line before the commit exists.
 - Consumers pin tags in `bench.lock` (`<producer>=<tag> manifest=<sha256>` per line, plan 4: the manifest sha pins content, so a moved HF tag changes nothing) and materialise them with `bench fetch` under `.bench/<producer>/`, rendering `scores.json` through `@jandira-tech/bench-viewer` with their theme. Frontends show the latest score; "latest" means the lock was bumped, never a runtime fetch.
 
 ## Hooks
 
-- Hooks come from `bench-ops/lefthook/common.yml` through lefthook `remotes:`; each repo's `lefthook.yml` is the copy of `lefthook/REPO-lefthook.yml`.
-- They run locally in seconds, all on pre-commit: size guard, ripsecrets, and `bench status --fail-on-stale`. No CI gate.
+- Hooks come from `bench-ops/lefthook/common.yml` through lefthook `remotes:`; each repo's `lefthook.yml` is the copy of `lefthook/REPO-lefthook.yml`. Producers need nothing extra: the shared `ledger` job (`bench hook ledger`, ungated) checks `release/index.jsonl` on every commit — the staged blob must start with HEAD's byte for byte, every line must parse as a `LedgerEntry`, no tag twice, no staged deletion or rename.
+- They run locally in seconds, all on pre-commit: size guard, ripsecrets, the ledger check, and `bench status --fail-on-stale`. No CI gate.
 - No pre-push or post-* hooks: those belong to git-lfs, and lefthook taking them over makes pushes from branches without this config skip LFS uploads silently.
 - Escape hatches: `LEFTHOOK=0` skips all hooks; `BENCH_ALLOW_STALE=1` lets a commit through with a lock behind its producer.
 - Requirements on each machine: `uv tool install --editable ~/bench` (or `uv tool install git+https://github.com/arthrod/bench-ops`), `brew install lefthook ripsecrets`.
