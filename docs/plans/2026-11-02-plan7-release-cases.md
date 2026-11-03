@@ -32,7 +32,7 @@ Tracking: arthrod/bench-ops#8. Survey: `docs/plans/reviews/survey-b.md` (copy of
 |---|---|---|---|
 | redline | docxodus (npm/WASM, the bench lane) | 12.6.5 | 15.0.0 — bump bench.yaml + utils/docxodus + root package.json together |
 | redline | superdoc (PyPI `superdoc-sdk`) | 2.16.0 | 2.25.0 (npm `superdoc` 2.28.0 is the browser editor: no PDF, not a redline engine) |
-| redline | Apryse | 12.2.1, **demo key: every page watermarked** | 12.2.1 with a production `APRYSE_API_KEY` (Arthur) |
+| redline | Apryse | 12.2.1, demo key (watermarked) | 12.2.1, demo key: the stamp-matched normalisation shows the watermark moves scores +0.03 on average (Arthur, 2026-11-03) |
 | convert | LibreOffice | 26.8.0.3 | 26.8.2.2 (installed); re-freeze the renderer canary fingerprint |
 | convert | docxide-pdf | 0.17.1 | 0.18.4 (crates.io; the crate is the release channel) |
 | convert | docxodus (`@docxodus/export`) | 14.2.0 | 15.0.0 |
