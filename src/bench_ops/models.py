@@ -365,6 +365,10 @@ class Case(Strict):
     pair: str | None = None  # comparison identity where meaningful
     not_applicable: list[str] = Field(default_factory=list)  # engines excluded for cause
     unavailable: list[str] = Field(default_factory=list)  # cohort lanes with no published measurement
+    # plan 7 (ndb#132): one score per shown page (null = that page could not be scored), and
+    # the case's files per lane, relative to CasesIndex.files_base (the record on Hugging Face)
+    page_scores: dict[str, list[MetricValue | None]] = Field(default_factory=dict)
+    files: dict[str, AssetPath] = Field(default_factory=dict)
 
     def versioned_lane_keys(self) -> set[str]:
         """The lanes that must carry a version label: every measured lane plus the
@@ -372,7 +376,7 @@ class Case(Strict):
         keys: set[str] = set()
         for m in (
             self.pages, self.page_counts, self.scores, self.times,
-            self.pdfs, self.errors, self.metric_diagnostics,
+            self.pdfs, self.errors, self.metric_diagnostics, self.page_scores, self.files,
         ):
             keys |= m.keys()
         return keys | set(self.not_applicable) | set(self.unavailable)
@@ -394,6 +398,8 @@ class Case(Strict):
             | self.times.keys()
             | self.pdfs.keys()
             | self.metric_diagnostics.keys()
+            | self.page_scores.keys()
+            | self.files.keys()
         )
         clash = sorted(set(self.dropped) & active)
         if clash:
@@ -414,6 +420,12 @@ class Case(Strict):
         unversioned = sorted(self.versioned_lane_keys() - self.versions.keys())
         if unversioned:
             raise ValueError(f"lane keys without a version label: {unversioned}")
+        for lane, ps in self.page_scores.items():
+            limit = len(self.shown) if self.shown is not None else len(self.pages.get(lane, []))
+            if len(ps) > limit:
+                raise ValueError(
+                    f"page_scores[{lane!r}] has {len(ps)} values for {limit} shown pages"
+                )
         if self.shown is not None:
             pages_ = list(self.shown)
             if any(p < 1 for p in pages_) or any(b <= a for a, b in pairwise(pages_)):
@@ -471,12 +483,22 @@ class CasesIndex(Strict):
     assets_base: str  # public HTTPS R2 base URL the ~/ paths resolve against
     engines: list[Engine]  # sorted by key; the union of every lane key used in the data
     groups: list[ShardRef]  # sorted by (kind, group); unique paths from shard_path()
+    files_base: str | None = None  # plan 7: HTTPS base the Case.files ~/ paths resolve against
 
     @field_validator("assets_base")
     @classmethod
     def _https_directory(cls, v: str) -> str:
         if not (v.startswith("https://") and v.endswith("/") and v[len("https://") : -1]):
             raise ValueError("assets_base must be an absolute https:// URL ending in /")
+        return v
+
+    @field_validator("files_base")
+    @classmethod
+    def _files_https_directory(cls, v: str | None) -> str | None:
+        if v is not None and not (
+            v.startswith("https://") and v.endswith("/") and v[len("https://") : -1]
+        ):
+            raise ValueError("files_base must be an absolute https:// URL ending in /")
         return v
 
     @model_validator(mode="after")
