@@ -257,7 +257,14 @@ def test_workspace_repos_toml_pins_the_jubarte_pipeline() -> None:
     assert pipeline.steps[0].run == (
         "uv run python -m neurotic_docx_bench.jubarte_release_info {version}"
     )
-    assert pipeline.steps[1].run == "uv run bench report && uv run scripts/release_views.py"
+    assert pipeline.steps[1].run == (
+        "uv run bench report && uv run scripts/release_views.py --release-version {version}"
+    )
+    # ndb #143: stage the shown pages, upload them to R2 under release/<v>/, then verify.
+    assert pipeline.steps[2].run.startswith("uv run bench release-pages {version} && ")
+    assert pipeline.steps[2].run.endswith(
+        "upload_r2.py out/release-pages/{version} release/{version} --verify"
+    )
     assert pipeline.steps[3].run == "bench publish ndb {tag}"
     assert pipeline.steps[4].run == "bench bump ndb && bench fetch"
     assert pipeline.steps[5].run == "bench deploy jubarte-app --yes"
