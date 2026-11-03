@@ -230,10 +230,27 @@ def publish_cmd(
         raise typer.Exit(1) from None
     console.print(dumps(m), markup=False, highlight=False)
     if not dry_run:
-        console.print(
-            f"push with: git -C {repo.local_path} push origin {repo.branch} && "
-            f"git -C {repo.local_path} push origin {tag}"
+        console.print(push_hint(repo.local_path, _current_branch(repo.local_path), repo.branch, tag))
+
+
+def _current_branch(path: Path) -> str:
+    try:
+        return git(path, "rev-parse", "--abbrev-ref", "HEAD").strip()
+    except subprocess.CalledProcessError:
+        return "HEAD"
+
+
+def push_hint(path: Path, current: str, default: str, tag: str) -> str:
+    """The push command for the ledger commit and the tag (#11): the branch actually checked out."""
+    if current == "HEAD":
+        return (
+            f"HEAD is detached in {path}: put the ledger commit on a branch, then push it and "
+            f"`git -C {path} push origin {tag}`"
         )
+    hint = f"push with: git -C {path} push origin HEAD:{current} && git -C {path} push origin {tag}"
+    if current != default:
+        hint += f"\nthen open a PR: (cd {path} && gh pr create --base {default} --head {current})"
+    return hint
 
 
 @app.command("bump")
