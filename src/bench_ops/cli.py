@@ -32,6 +32,14 @@ from bench_ops.hf import HfHub, Witness, sha256_of, verify_manifest
 from bench_ops.hooks import secrets_command, size_guard
 from bench_ops.ledger import check_ledger
 from bench_ops.models import LedgerEntry, Lock, Manifest, dumps, manifest_path
+from bench_ops.pipeline import (
+    PipelineError,
+    build_plan,
+    execute_plan,
+    log_path,
+    preflight,
+    word_probe,
+)
 from bench_ops.publish import PublishError, run_script
 from bench_ops.publish import publish as publish_release
 from bench_ops.status import latest_tags, report
@@ -51,6 +59,14 @@ def _config() -> Config:
             f"[red]no repos.toml at {e.filename}; set BENCH_ROOT or clone bench-ops to ~/bench[/]"
         )
         raise typer.Exit(2) from None
+    except ValidationError as e:
+        console.print(f"[red]invalid repos.toml: {e}[/]", markup=False, highlight=False)
+        raise typer.Exit(2) from None
+
+
+def _word_probe(command: str, timeout_seconds: int) -> int:
+    """The Word preflight probe; tests replace this function with an offline fake."""
+    return word_probe(command, timeout_seconds)
 
 
 INACTIVE = "HOOKS NOT ACTIVE"
@@ -284,20 +300,82 @@ def fetch_cmd(
 
 @app.command("deploy")
 def deploy_cmd(
-    repo_name: Annotated[str, typer.Argument(help="Consumer name in repos.toml.")],
+    repo_name: Annotated[
+        str, typer.Argument(help="Consumer name in repos.toml, or a configured pipeline name.")
+    ],
+    version: Annotated[
+        str | None, typer.Argument(help="Pipeline version, e.g. 0.18.0 (pipeline only).")
+    ] = None,
     yes: Annotated[
-        bool, typer.Option(help="Actually run the deploy; without it bench only prints it.")
+        bool, typer.Option(help="Actually run the pipeline; without it bench only prints it.")
     ] = False,
+    deploy: Annotated[
+        bool, typer.Option(help="Also run the pipeline's gated deploy step; --no-deploy is "
+                              "the explicit default.")
+    ] = False,
+    from_step: Annotated[
+        int, typer.Option("--from", min=1, help="Resume at this one-based pipeline step.")
+    ] = 1,
+    tag: Annotated[
+        str | None, typer.Option(help="ndb-vX.Y.Z release tag override.")
+    ] = None,
 ) -> None:
-    """Run a consumer's deploy command with the version its bench.lock pins (plan 2 rev 3).
+    """Run a consumer deploy or a configured release pipeline.
 
-    Consumer only: producers release with `bench publish`. Proves the fetched tree first
-    (`bench fetch --check`, plan 4): .bench/ must match bench.lock byte for byte, or the
-    deploy is refused. Then substitutes {version} from the lock's tag of its first
-    producer. Deploys are outward-facing: without --yes the command is printed, not
-    run.
+    `bench deploy <consumer>` keeps the plan-2 behavior: prove the fetched tree, resolve
+    {version} from bench.lock, and run the consumer's deploy command only with --yes.
+    `bench deploy <pipeline> <version>` prints the configured plan by default; --yes runs
+    steps 1-5 and --deploy additionally runs the gated outward-facing deploy.
     """
     cfg = _config()
+    repo_names = {repo.name for repo in cfg.repos}
+    pipeline_names = set(cfg.pipelines)
+
+    if repo_name in pipeline_names:
+        if repo_name in repo_names:  # config validation normally refuses this first
+            console.print(
+                f"[red]{repo_name!r} names both a pipeline and a repo; "
+                "pipeline and repo names must be distinct[/]"
+            )
+            raise typer.Exit(2) from None
+        if version is None:
+            console.print(
+                f"[red]pipeline {repo_name!r} requires a version; "
+                f"use `bench deploy {repo_name} <version>`[/]"
+            )
+            raise typer.Exit(2) from None
+        _deploy_pipeline(
+            cfg,
+            repo_name,
+            version,
+            yes=yes,
+            deploy=deploy,
+            from_step=from_step,
+            tag=tag,
+        )
+        return
+
+    if repo_name not in repo_names:
+        known_repos = ", ".join(sorted(repo_names))
+        known_pipelines = ", ".join(sorted(pipeline_names)) or "(none)"
+        console.print(
+            f"[red]unknown repo or pipeline {repo_name!r}; it is neither a configured repo "
+            f"nor a pipeline; repos: {known_repos}; pipelines: {known_pipelines}[/]"
+        )
+        raise typer.Exit(1) from None
+    if version is not None:
+        console.print(
+            f"[red]{repo_name!r} is a consumer, not a pipeline; a version belongs only to "
+            "`bench deploy <pipeline> <version>`[/]"
+        )
+        raise typer.Exit(2) from None
+    if deploy or from_step != 1 or tag is not None:
+        console.print(
+            f"[red]--deploy, --from, and --tag belong to a pipeline, "
+            f"not the consumer deploy {repo_name!r}[/]"
+        )
+        raise typer.Exit(2) from None
+
     try:
         repo = cfg.by_name(repo_name)
     except KeyError:
@@ -348,6 +426,76 @@ def deploy_cmd(
     if code != 0:
         console.print(f"[red]deploy exited {code}[/]")
         raise typer.Exit(code)
+
+
+def _deploy_pipeline(
+    cfg: Config,
+    pipeline_name: str,
+    version: str,
+    *,
+    yes: bool,
+    deploy: bool,
+    from_step: int,
+    tag: str | None,
+) -> None:
+    """Print and, only with --yes, run one configured release pipeline."""
+    try:
+        plan = build_plan(cfg, pipeline_name, version, tag, from_step=from_step)
+    except PipelineError as e:
+        console.print(f"[red]{e}[/]", markup=False, highlight=False)
+        raise typer.Exit(1) from None
+    if from_step > len(plan.steps):
+        console.print(
+            f"[red]--from {from_step} has no step; the pipeline has {len(plan.steps)}[/]"
+        )
+        raise typer.Exit(2) from None
+    if yes and from_step == plan.deploy_step and not deploy:
+        console.print(
+            f"[red]step {from_step} is the deploy step and needs --deploy[/]"
+        )
+        raise typer.Exit(2) from None
+
+    console.print(
+        f"bench deploy {pipeline_name} {version} plan (ndb tag {plan.tag})",
+        markup=False,
+        highlight=False,
+    )
+    for step in plan.steps:
+        if step.number < from_step:
+            status = "skip (before --from)"
+        elif step.number == plan.deploy_step and not deploy:
+            status = "requires --deploy"
+        elif not yes:
+            status = "dry"
+        else:
+            status = "run"
+        console.print(
+            f"{step.number}. {step.name} [{step.repo}] {step.repo_path} — {status}",
+            soft_wrap=True,
+        )
+        console.print(f"   {step.command}", markup=False, highlight=False)
+
+    if not yes:
+        console.print("[yellow]dry (no --yes): printing the plan, not running it[/]")
+        return
+
+    spec = cfg.pipelines[pipeline_name]
+    try:
+        preflight(cfg, spec, _word_probe)
+    except PipelineError as e:
+        console.print(f"[red]preflight refused: {e}[/]", markup=False, highlight=False)
+        raise typer.Exit(1) from None
+
+    log = log_path(cfg.root, pipeline_name, version, datetime.now(UTC))
+    console.print(f"log: {log}")
+    result = execute_plan(plan, run_script, log, from_step=from_step, deploy=deploy)
+    if result.exit_code != 0:
+        failed = result.failed_step
+        where = f"step {failed.number} ({failed.name})" if failed is not None else "pipeline step"
+        console.print(f"[red]{where} exited {result.exit_code}[/]")
+        console.print(f"log: {log}", markup=False, highlight=False)
+        raise typer.Exit(result.exit_code)
+    console.print(f"pipeline complete: {log}", markup=False, highlight=False)
 
 
 def _refuse_wild_gc_targets(targets: list[Path], linked: list[Path], bench_root: Path) -> None:

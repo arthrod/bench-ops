@@ -45,3 +45,47 @@ branch = "main"
 role = "consumer"
 path = "/Users/arthrod/temp/T/1_jubarte-redlines/jubarte-app"
 deploy = "cd jubarte-site && scripts/release.sh deploy {version}"
+
+
+# Plan 7 D3: score one jubarte release, publish ndb, pin/fetch it in jubarte-app,
+# then deploy only when Arthur adds --deploy. The page/R2 command is a named
+# placeholder until ndb's plan-7 renderer lands.
+[pipelines.jubarte]
+preflight_repo = "ndb"
+publish_step = 4
+deploy_step = 6
+word_timeout_seconds = 30
+required_ancestors = [
+  "31e42a32b17744dd8b61f06ddedbbceaae49b9cf",  # ndb #102
+  "1dbbdfd341976cf42bc9fed4c12645b723ef034b",  # ndb #104
+]
+
+[[pipelines.jubarte.steps]]
+name = "release-info"
+repo = "ndb"
+run = "uv run python -m neurotic_docx_bench.jubarte_release_info {version}"
+
+[[pipelines.jubarte.steps]]
+name = "report-and-release-views"
+repo = "ndb"
+run = "uv run bench report && uv run scripts/release_views.py"
+
+[[pipelines.jubarte.steps]]
+name = "stage-pages-and-upload-r2"
+repo = "ndb"
+run = "uv run python scripts/publish/release_pages.py {version}"
+
+[[pipelines.jubarte.steps]]
+name = "publish-ndb"
+repo = "ndb"
+run = "bench publish ndb {tag}"
+
+[[pipelines.jubarte.steps]]
+name = "bump-and-fetch-jubarte-app"
+repo = "jubarte-app"
+run = "bench bump ndb && bench fetch"
+
+[[pipelines.jubarte.steps]]
+name = "deploy-jubarte-app"
+repo = "jubarte-app"
+run = "bench deploy jubarte-app --yes"
