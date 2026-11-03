@@ -29,8 +29,7 @@ from bench_ops.gc import (
 )
 from bench_ops.gitx import clone_or_pull, git, origin_url
 from bench_ops.hf import HfHub, Witness, sha256_of, verify_manifest
-from bench_ops.hooks import secrets_command, size_guard
-from bench_ops.ledger import check_ledger
+from bench_ops.hooks import ledger_problems, secrets_command, size_guard
 from bench_ops.models import LedgerEntry, Lock, Manifest, dumps, manifest_path
 from bench_ops.pipeline import (
     PipelineError,
@@ -765,47 +764,24 @@ def hook_secrets(files: StagedFiles = None) -> None:
         raise typer.Exit(rc)
 
 
-LEDGERS = ("release/index.jsonl", "archive/index.jsonl")  # M4: every ledger, not one
-
-
-def _git_text(repo: Path, *args: str, hook: bool = False) -> str | None:
-    try:
-        return git(repo, *args, hook=hook)
-    except subprocess.CalledProcessError:
-        return None
-
-
 @hook_app.command("ledger")
-def hook_ledger() -> None:
+def hook_ledger(files: StagedFiles = None) -> None:
     """Refuse anything but an append to the ledgers (D7/D14, C1/C2, M4).
 
-    Runs on every commit (lefthook must not glob-gate it: staged deletions and renames are
-    exactly what `git diff --cached --name-status -M` catches). Both ledgers it knows about
-    are guarded — release/index.jsonl in the producers and archive/index.jsonl in
-    BENCH_ROOT (the bench-ops repo; elsewhere the path is simply absent and the check
-    passes). The staged blob is read from the index git will commit — GIT_INDEX_FILE is
-    kept, so for a path-limited commit (`git commit -- release/index.jsonl`) the bytes
-    validated are the bytes committed — and compared with HEAD's.
+    Without files it runs on every commit (lefthook must not glob-gate it: staged deletions
+    and renames are exactly what `git diff --cached --name-status -M` catches) and guards
+    every ledger it knows about — release/index.jsonl in the producers and
+    archive/index.jsonl in BENCH_ROOT (the bench-ops repo; elsewhere the path is simply
+    absent and the check passes). With files (the glob-scoped producer job) only the ledgers
+    among them are compared; the deletion and rename check still runs for all of them.
+
+    The staged blob is read from the index git will commit — GIT_INDEX_FILE is kept, so for
+    a path-limited commit (`git commit -- release/index.jsonl`) the bytes validated are the
+    bytes committed — and compared with HEAD's.
     """
-    cwd = Path.cwd()
-    failed = False
-    for ledger in LEDGERS:
-        staged = _git_text(cwd, "show", f":{ledger}", hook=True)
-        if staged is None:  # not in the index: a deletion/rename, or nothing staged
-            diff = _git_text(cwd, "diff", "--cached", "--name-status", "-M", "--", ledger,
-                             hook=True) or ""
-            if any(ln.split("\t")[0].startswith(("D", "R")) for ln in diff.splitlines()):
-                console.print(
-                    f"[red]{ledger} may only grow: staged deletions and renames are "
-                    "refused — it is append-only[/]"
-                )
-                failed = True
-            continue
-        problems = check_ledger(_git_text(cwd, "show", f"HEAD:{ledger}", hook=True), staged)
-        for p in problems:
-            console.print(f"[red]{p}[/]")
-        if problems:
-            console.print(f"[red]{ledger} is append-only (bench-ops docs/CONTRACT.md)[/]")
-            failed = True
-    if failed:
+    problems = ledger_problems(Path.cwd(), files)
+    for p in problems:
+        console.print(f"[red]{p}[/]")
+    if problems:
+        console.print("[red]the ledgers are append-only (bench-ops docs/CONTRACT.md)[/]")
         raise typer.Exit(1)
