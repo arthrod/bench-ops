@@ -6,11 +6,13 @@ import os
 import re
 import tomllib
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, StringConstraints, model_validator
 
 Role = Literal["producer", "consumer"]
+GitSha = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{40}$")]
+NonEmpty = Annotated[str, StringConstraints(min_length=1)]
 
 
 class ReleaseSpec(BaseModel):
@@ -36,6 +38,39 @@ class ReleaseSpec(BaseModel):
     private: bool = True  # the dataset's required visibility, checked before any upload (H2)
 
 
+class PipelineStep(BaseModel):
+    """One ordered command in a release pipeline.
+
+    The command is configuration, not code: ndb can rename or add a release tool without
+    changing bench-ops. ``{version}`` is the jubarte release version and ``{tag}`` is the
+    ndb release tag. Unknown placeholders are rejected when the workspace config loads.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    name: NonEmpty
+    repo: NonEmpty
+    run: NonEmpty
+
+
+class PipelineSpec(BaseModel):
+    """A named release pipeline and the safety checks that guard it.
+
+    ``deploy_step`` is the one-based number of the outward-facing deploy command; it runs
+    only with the pipeline's explicit deploy approval. ``required_ancestors`` are git SHAs
+    that must already be ancestors of the preflight repository's HEAD.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    steps: list[PipelineStep]
+    preflight_repo: NonEmpty = "ndb"
+    publish_step: int = Field(default=0, ge=0)
+    deploy_step: int = Field(default=0, ge=0)
+    word_timeout_seconds: int = Field(default=30, gt=0)
+    required_ancestors: list[GitSha] = Field(default_factory=list)
+
+
 class Repo(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -56,6 +91,56 @@ class Repo(BaseModel):
 class Config(BaseModel):
     root: Path
     repos: list[Repo] = Field(default_factory=list)
+    pipelines: dict[str, PipelineSpec] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate_pipelines(self) -> Config:
+        repo_names = [repo.name for repo in self.repos]
+        duplicates = sorted({name for name in repo_names if repo_names.count(name) > 1})
+        if duplicates:
+            raise ValueError(f"duplicate repo names: {duplicates}")
+
+        for name, pipeline in self.pipelines.items():
+            if re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", name) is None:
+                raise ValueError(
+                    f"pipeline name {name!r} must be a lowercase slug "
+                    "(letters, digits, and hyphens)"
+                )
+            if name in repo_names:
+                raise ValueError(
+                    f"{name!r} names both a pipeline and a repo; pipeline and repo names "
+                    "must be distinct"
+                )
+            if pipeline.preflight_repo not in repo_names:
+                raise ValueError(
+                    f"pipeline {name!r} has unknown preflight repo {pipeline.preflight_repo!r}"
+                )
+            if pipeline.publish_step and pipeline.publish_step > len(pipeline.steps):
+                raise ValueError(
+                    f"pipeline {name!r} publish_step {pipeline.publish_step} has no matching step"
+                )
+            if pipeline.deploy_step and pipeline.deploy_step > len(pipeline.steps):
+                raise ValueError(
+                    f"pipeline {name!r} deploy_step {pipeline.deploy_step} has no matching step"
+                )
+            step_names = [step.name for step in pipeline.steps]
+            duplicate_steps = sorted(
+                {step_name for step_name in step_names if step_names.count(step_name) > 1}
+            )
+            if duplicate_steps:
+                raise ValueError(f"pipeline {name!r} has duplicate step names: {duplicate_steps}")
+            for step in pipeline.steps:
+                if step.repo not in repo_names:
+                    raise ValueError(
+                        f"pipeline {name!r} step {step.name!r} names unknown repo {step.repo!r}"
+                    )
+                for placeholder in re.findall(r"\{([^{}]+)\}", step.run):
+                    if placeholder not in {"version", "tag"}:
+                        raise ValueError(
+                            f"pipeline {name!r} step {step.name!r} has unknown placeholder "
+                            f"{{{placeholder}}}; use {{version}} or {{tag}}"
+                        )
+        return self
 
     def by_name(self, name: str) -> Repo:
         for r in self.repos:
@@ -104,7 +189,11 @@ def default_root() -> Path:
 def load_config(root: Path | None = None) -> Config:
     root = (root or default_root()).resolve()
     data = tomllib.loads((root / "repos.toml").read_text())
-    cfg = Config(root=root, repos=data.get("repos", []))
+    cfg = Config(
+        root=root,
+        repos=data.get("repos", []),
+        pipelines=data.get("pipelines", {}),
+    )
     for r in cfg.repos:
         r._root = root
     return cfg
