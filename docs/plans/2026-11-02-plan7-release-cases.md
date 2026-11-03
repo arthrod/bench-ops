@@ -28,15 +28,15 @@ Tracking: arthrod/bench-ops#8. Survey: `docs/plans/reviews/survey-b.md` (copy of
 ### D2'. Arthur, 2026-11-02: refresh every high-quality vendor on both sets (supersedes D2)
 "Yes, but not only": the one-time run is a **vendor refresh**, each high-quality vendor at its newest version, on `convert_860` and `redline_600`. Word stays the oracle (its existing PDFs and compares are reused, not re-run).
 
-| Task | Vendor | Scored today | Refresh to |
+| Task | Vendor | Scored today | Refresh to (survey `reviews/p7-vendors.md`) |
 |---|---|---|---|
-| redline | docxodus | 12.6.5 (C#) | 15.0.0 (NuGet) |
-| redline | superdoc | superdoc-sdk 2.16.0 | superdoc 2.28.0 (npm; the sdk package was renamed) |
-| redline | Apryse | 12.2.1 (PR #108/#109, unmerged) | 12.2.1, or newer if the SDK has one; needs #108 merged |
-| convert | LibreOffice | 26.8.0.3 | 26.8.2.2 (installed) |
-| convert | docxide-pdf | 0.17.1 | `main` @ 0d97e9b0 (2026-10-31; the project publishes no releases, so the commit is the pin) |
-| convert | docxodus | v1 cohort only | 15.0.0 |
-| convert | Apryse | v1 cohort only | as above |
+| redline | docxodus (npm/WASM, the bench lane) | 12.6.5 | 15.0.0 — bump bench.yaml + utils/docxodus + root package.json together |
+| redline | superdoc (PyPI `superdoc-sdk`) | 2.16.0 | 2.25.0 (npm `superdoc` 2.28.0 is the browser editor: no PDF, not a redline engine) |
+| redline | Apryse | 12.2.1, **demo key: every page watermarked** | 12.2.1 with a production `APRYSE_API_KEY` (Arthur) |
+| convert | LibreOffice | 26.8.0.3 | 26.8.2.2 (installed); re-freeze the renderer canary fingerprint |
+| convert | docxide-pdf | 0.17.1 | 0.18.4 (crates.io; the crate is the release channel) |
+| convert | docxodus (`@docxodus/export`) | 14.2.0 | 15.0.0 |
+| convert | Apryse | 12.2.1 demo | as above |
 
 Left out as not high-quality: PyMuPDF Pro unlicensed (first 3 pages only), minipdf, rdocx, office2pdf. Each refresh is its own `bench` run directory, its own HF upload, its own row in `converters.jsonl` / `versions.json`, so the old versions' scores stay as history. The refresh is repeatable (`bench vendors refresh --set …`) for when a vendor ships again; it is never part of `bench deploy jubarte`.
 
