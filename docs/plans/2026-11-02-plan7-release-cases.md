@@ -25,7 +25,22 @@ Tracking: arthrod/bench-ops#8. Survey: `docs/plans/reviews/survey-b.md` (copy of
 - Each set has a version (`set_version` in the CSV header comment and in `scores.json` provenance). Changing a set is a new set version, never an edit, so release-to-release numbers stay comparable.
 - Rejected alternative: the 600 sample ∪ the 192 jubarte.pro pairs not in it (792). More work per release than Arthur's 600.
 
-### D2. One-time backfill for the other tools (not per release)
+### D2'. Arthur, 2026-11-02: refresh every high-quality vendor on both sets (supersedes D2)
+"Yes, but not only": the one-time run is a **vendor refresh**, each high-quality vendor at its newest version, on `convert_860` and `redline_600`. Word stays the oracle (its existing PDFs and compares are reused, not re-run).
+
+| Task | Vendor | Scored today | Refresh to |
+|---|---|---|---|
+| redline | docxodus | 12.6.5 (C#) | 15.0.0 (NuGet) |
+| redline | superdoc | superdoc-sdk 2.16.0 | superdoc 2.28.0 (npm; the sdk package was renamed) |
+| redline | Apryse | 12.2.1 (PR #108/#109, unmerged) | 12.2.1, or newer if the SDK has one; needs #108 merged |
+| convert | LibreOffice | 26.8.0.3 | 26.8.2.2 (installed) |
+| convert | docxide-pdf | 0.17.1 | `main` @ 0d97e9b0 (2026-10-31; the project publishes no releases, so the commit is the pin) |
+| convert | docxodus | v1 cohort only | 15.0.0 |
+| convert | Apryse | v1 cohort only | as above |
+
+Left out as not high-quality: PyMuPDF Pro unlicensed (first 3 pages only), minipdf, rdocx, office2pdf. Each refresh is its own `bench` run directory, its own HF upload, its own row in `converters.jsonl` / `versions.json`, so the old versions' scores stay as history. The refresh is repeatable (`bench vendors refresh --set …`) for when a vendor ships again; it is never part of `bench deploy jubarte`.
+
+### D2. One-time backfill for the other tools (not per release) — superseded by D2'
 Rule 1 forbids re-running other tools per release, so their lanes on the new pairs must exist once:
 - redlines: docxodus for the 36 + any of the 366 lacking a Word PDF (fetched from HF first, as today), superdoc for the pairs it lacks; Word compare oracle already exists for all.
 - conversions: soffice + docxide already cover the 860.
@@ -67,7 +82,7 @@ Nothing is deleted by this plan. Every upload above is to Arthur's own HF datase
 
 0. Preserve: archive the gh-pages branch, upload the local-only results (table above).
 1. ndb: `results/sets/convert_860.csv`, `redline_600.csv` + a test that every row's inputs exist (local or HF) and hashes match.
-2. ndb: backfill run for docxodus/superdoc on the new pairs; scores to HF.
+2. ndb: vendor refresh (D2') on both sets; scores and outputs to HF.
 3. ndb: `release_jubarte_info --convert-set/--redline-set` (replaces the 600/600 draw; old flags kept for the archived evidence).
 4. ndb: `pages/render.py` (moved from gh-pages `_build`), 12-page cap, per-page scores; `ledger/cases.py` emits release shards from the run directories.
 5. bench-viewer: per-page scores, HF file links, 12 pages, random-on-open.
