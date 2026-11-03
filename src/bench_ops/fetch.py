@@ -18,12 +18,14 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
+import subprocess
 import tempfile
 from pathlib import Path, PurePosixPath
 
 from pydantic import ValidationError
 
 from bench_ops.config import Config, Repo
+from bench_ops.gitx import git
 from bench_ops.hf import HubApi, sha256_of
 from bench_ops.models import FileEntry, LedgerEntry, Lock, Manifest, manifest_path
 
@@ -64,6 +66,39 @@ def _rel_under(path: str, prefix: str, producer: str) -> Path:
 # ---- bench bump --------------------------------------------------------------------------
 
 
+def _origin_ledger(checkout: Path, branch: str) -> str | None:
+    """The ledger on origin/<branch> after a fetch; None when there is no remote copy (#21)."""
+    if not (checkout / ".git").exists():
+        return None
+    rel = "release/index.jsonl"
+    try:
+        git(checkout, "fetch", "-q", "origin", branch)
+        return git(checkout, "show", f"origin/{branch}:{rel}")
+    except subprocess.CalledProcessError:
+        return None
+
+
+def _newest_ledger(checkout: Path, branch: str, ledger: Path) -> str | None:
+    """The longer of the working-tree ledger and origin/<branch>'s (#21).
+
+    The ledger only grows, so one copy must be a prefix of the other. The working tree may
+    be ahead (a publish commits the ledger locally and leaves the push to a human) or behind
+    / on another branch (a checkout parked on a results branch); origin covers the latter.
+    """
+    local = ledger.read_text() if ledger.exists() else None
+    remote = _origin_ledger(checkout, branch)
+    if local is None or remote is None:
+        return local if remote is None else remote
+    if local.startswith(remote):
+        return local
+    if remote.startswith(local):
+        return remote
+    raise FetchError(
+        f"{ledger} and origin/{branch}:release/index.jsonl diverge (neither is a prefix of the "
+        "other); the ledger only grows, so one of them was rewritten — repair it before bumping"
+    )
+
+
 def bump(producer: str, cfg: Config, repo_root: Path) -> tuple[str, str, str]:
     """Write the producer's last ledger tag and manifest sha into <repo_root>/bench.lock.
 
@@ -75,9 +110,9 @@ def bump(producer: str, cfg: Config, repo_root: Path) -> tuple[str, str, str]:
     if repo.role != "producer":
         raise FetchError(f"{producer} is a {repo.role}; bench bump pins a producer's release")
     ledger = repo.local_path / "release" / "index.jsonl"
-    if not ledger.exists():
+    text = _newest_ledger(repo.local_path, repo.branch, ledger)
+    if text is None:
         raise FetchError(f"no release ledger at {ledger}: {producer} has published nothing")
-    text = ledger.read_text()
     torn = LedgerEntry.bad_line(text)
     if torn is not None:
         raise FetchError(f"{ledger} has a torn line ({torn}); repair the record before bumping")
