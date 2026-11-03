@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. Agents: never claudeagents; use pi (zai/glm-5.3, minimax/MiniMax-M3), codex or the other allowed agents per /conejo-code.
 
+> **Status (2026-11-03): implemented.** All 57 steps are done; their checkboxes are ticked. Two other-corpus agents audited the plan against the code separately (crush and pi, both zai/glm-5.3). Tasks 1–9 match the plan, at commits 3347709, e8cc8be, fcf0e39, 96cc419, 5b2944c, 090e3db, 647c486, abb7571 and a894a24. `pytest -q`: 399 passed; `ruff check .`: clean. Later plans changed some things on purpose: `Lock.shas`, ledger growth allowed by the size guard (b996ee5), `common.yml` ledger/fetch jobs and pre-push→pre-commit (6fbb1a5, 48d1d05, 2f1480a), and stray worktrees under `BENCH_ROOT/.work` instead of `.worktrees/` (plan 6B). Task 10's evidence was finished in #23: the probe was refused (`2.9 MB over the 2.0 MB limit`, exit 1), and the baseline has ndb's diskUsage (387,901 KB).
+
 **Goal:** A small workspace repo `arthrod/bench-ops` that links the four bench repos, defines the release contract (manifest, scores, ledger, lock) as pydantic models, and ships `bench sync`, `bench status`, `bench hook` and the shared lefthook config, so every later phase (publishing, viewer, consumer adaptation) builds on one tested foundation.
 
 **Architecture:** One Python package `bench_ops` (uv, Python 3.14, typer, pydantic v2, httpx, huggingface_hub) installed as a global uv tool, so every repo's git hook is just `bench hook <name>`. Repos are *linked*, not vendored: `repos.toml` names URL, branch, role and local path; nothing is a submodule. Lefthook config lives once in `bench-ops/lefthook/` and each repo pulls it through lefthook `remotes:`.
@@ -49,14 +51,14 @@ Each linked repo gets one new file, `lefthook.yml` (6 lines, Task 10).
 - Create: `~/bench/tests/__init__.py`
 - Create: `~/bench/README.md`
 
-- [ ] **Step 1: Create the repo and the package skeleton**
+- [x] **Step 1: Create the repo and the package skeleton**
 
 ```bash
 mkdir -p ~/bench/src/bench_ops ~/bench/tests ~/bench/lefthook ~/bench/docs/plans
 cd ~/bench && git init -b main
 ```
 
-- [ ] **Step 2: Write `pyproject.toml`**
+- [x] **Step 2: Write `pyproject.toml`**
 
 ```toml
 [project]
@@ -94,7 +96,7 @@ line-length = 100
 target-version = "py314"
 ```
 
-- [ ] **Step 3: Write `.gitignore`**
+- [x] **Step 3: Write `.gitignore`**
 
 ```
 # linked repos live beside this file but are not part of it
@@ -109,7 +111,7 @@ __pycache__/
 *.pyc
 ```
 
-- [ ] **Step 4: Write `src/bench_ops/__init__.py` and `tests/__init__.py`**
+- [x] **Step 4: Write `src/bench_ops/__init__.py` and `tests/__init__.py`**
 
 ```python
 """bench-ops: workspace, contract and single command for the docx benches."""
@@ -120,7 +122,7 @@ __version__ = "0.1.0"
 
 `tests/__init__.py` is empty.
 
-- [ ] **Step 5: Write `README.md`**
+- [x] **Step 5: Write `README.md`**
 
 ```markdown
 # bench-ops
@@ -134,14 +136,14 @@ The workspace for neurotic_docx_bench, editors_trial, benchmarks-law and jubarte
 Roles and rules: docs/CONTRACT.md. Plans: docs/plans/.
 ```
 
-- [ ] **Step 6: Install, check the CLI entry point resolves**
+- [x] **Step 6: Install, check the CLI entry point resolves**
 
 ```bash
 cd ~/bench && uv sync && uv run python -c "import bench_ops; print(bench_ops.__version__)"
 ```
 Expected: `0.1.0`
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 cd ~/bench && git add pyproject.toml .gitignore README.md src/bench_ops/__init__.py tests/__init__.py uv.lock
@@ -162,7 +164,7 @@ Every later commit in this plan ends with the same two attribution lines; they a
 - Create: `~/bench/src/bench_ops/config.py`
 - Test: `~/bench/tests/test_config.py`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/test_config.py
@@ -227,12 +229,12 @@ def test_by_name(tmp_path: Path) -> None:
         cfg.by_name("nope")
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cd ~/bench && uv run pytest tests/test_config.py -q`
 Expected: `ImportError: cannot import name 'Config' from 'bench_ops.config'` (module missing)
 
-- [ ] **Step 3: Write `src/bench_ops/config.py`**
+- [x] **Step 3: Write `src/bench_ops/config.py`**
 
 ```python
 """repos.toml: the linked repositories of the workspace."""
@@ -289,12 +291,12 @@ def load_config(root: Path | None = None) -> Config:
     return cfg
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cd ~/bench && uv run pytest tests/test_config.py -q`
 Expected: `6 passed`
 
-- [ ] **Step 5: Write the real `repos.toml`**
+- [x] **Step 5: Write the real `repos.toml`**
 
 The `path` entries point at today's checkouts so nothing 14 GB moves yet. Remove them later when the clones live under `~/bench`.
 
@@ -330,7 +332,7 @@ role = "consumer"
 path = "/Users/arthrod/temp/T/1_jubarte-redlines/jubarte-app"
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 cd ~/bench && git add repos.toml src/bench_ops/config.py tests/test_config.py
@@ -347,7 +349,7 @@ These models are *the* producer→consumer contract. `scores.json` mirrors the `
 - Create: `~/bench/src/bench_ops/models.py`
 - Test: `~/bench/tests/test_models.py`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/test_models.py
@@ -453,12 +455,12 @@ def test_scores_minimal() -> None:
     assert Scores.model_validate_json(s.model_dump_json()) == s
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cd ~/bench && uv run pytest tests/test_models.py -q`
 Expected: `ModuleNotFoundError: No module named 'bench_ops.models'`
 
-- [ ] **Step 3: Write `src/bench_ops/models.py`**
+- [x] **Step 3: Write `src/bench_ops/models.py`**
 
 ```python
 """The release contract shared by producers, the record (HF), the cache (R2) and consumers."""
@@ -630,12 +632,12 @@ def dumps(model: BaseModel) -> str:
     return json.dumps(model.model_dump(mode="json"), sort_keys=True, indent=2, ensure_ascii=False) + "\n"
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cd ~/bench && uv run pytest tests/test_models.py -q`
 Expected: `9 passed`
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cd ~/bench && git add src/bench_ops/models.py tests/test_models.py
@@ -650,7 +652,7 @@ git commit -m "feat: release contract models (manifest, ledger, lock, scores)"
 - Create: `~/bench/src/bench_ops/gitx.py`
 - Test: `~/bench/tests/test_gitx.py`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/test_gitx.py
@@ -703,12 +705,12 @@ def test_status_not_a_repo(tmp_path: Path) -> None:
     assert status(tmp_path / "missing").branch == "(missing)"
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cd ~/bench && uv run pytest tests/test_gitx.py -q`
 Expected: `ModuleNotFoundError: No module named 'bench_ops.gitx'`
 
-- [ ] **Step 3: Write `src/bench_ops/gitx.py`**
+- [x] **Step 3: Write `src/bench_ops/gitx.py`**
 
 ```python
 """Thin git wrapper. Every call is a subprocess; nothing here rewrites history."""
@@ -765,12 +767,12 @@ def worktrees(repo: Path) -> list[Path]:
     return paths
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cd ~/bench && uv run pytest tests/test_gitx.py -q`
 Expected: `4 passed`
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cd ~/bench && git add src/bench_ops/gitx.py tests/test_gitx.py
@@ -785,7 +787,7 @@ git commit -m "feat: git wrapper (clone_or_pull, status, worktrees)"
 - Create: `~/bench/src/bench_ops/cli.py`
 - Test: `~/bench/tests/test_cli_sync.py`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/test_cli_sync.py
@@ -832,12 +834,12 @@ def test_sync_only_one_repo(root: Path) -> None:
     assert "nope" in result.output
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cd ~/bench && uv run pytest tests/test_cli_sync.py -q`
 Expected: `ModuleNotFoundError: No module named 'bench_ops.cli'`
 
-- [ ] **Step 3: Write `src/bench_ops/cli.py`**
+- [x] **Step 3: Write `src/bench_ops/cli.py`**
 
 ```python
 """`bench`: the one command of the workspace."""
@@ -897,12 +899,12 @@ def sync(only: str | None = typer.Option(None, help="Only this repo (name in rep
         console.print(f"{r.name:<16} {action:<7} {r.local_path}  ·  {hooks}")
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cd ~/bench && uv run pytest tests/test_cli_sync.py -q`
 Expected: `3 passed`
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cd ~/bench && git add src/bench_ops/cli.py tests/test_cli_sync.py
@@ -919,7 +921,7 @@ HF reports a `sha256` only for LFS-stored files (`RepoFile.lfs["sha256"]`). Smal
 - Create: `~/bench/src/bench_ops/hf.py`
 - Test: `~/bench/tests/test_hf.py`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/test_hf.py
@@ -995,12 +997,12 @@ def test_small_mismatch(tmp_path: Path) -> None:
     assert w.mismatched == ["release/ndb-v1.0.0/scores.json"]
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cd ~/bench && uv run pytest tests/test_hf.py -q`
 Expected: `ModuleNotFoundError: No module named 'bench_ops.hf'`
 
-- [ ] **Step 3: Write `src/bench_ops/hf.py`**
+- [x] **Step 3: Write `src/bench_ops/hf.py`**
 
 ```python
 """Hugging Face as the record: is every manifest file there, with the bytes the manifest says?"""
@@ -1080,12 +1082,12 @@ def verify_manifest(m: Manifest, api: HubApi) -> Witness:
     return w
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cd ~/bench && uv run pytest tests/test_hf.py -q`
 Expected: `4 passed`
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cd ~/bench && git add src/bench_ops/hf.py tests/test_hf.py
@@ -1103,7 +1105,7 @@ Per repo: branch, dirty count, worktrees outside `.worktrees/`, and for producer
 - Modify: `~/bench/src/bench_ops/cli.py` (add `status` command)
 - Test: `~/bench/tests/test_status.py`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/test_status.py
@@ -1178,12 +1180,12 @@ def test_cli_status_runs(tmp_path: Path, monkeypatch) -> None:
     assert "ndb" in result.output and "no releases yet" in result.output
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cd ~/bench && uv run pytest tests/test_status.py -q`
 Expected: `ModuleNotFoundError: No module named 'bench_ops.status'`
 
-- [ ] **Step 3: Write `src/bench_ops/status.py`**
+- [x] **Step 3: Write `src/bench_ops/status.py`**
 
 ```python
 """One row of `bench status` per linked repo."""
@@ -1261,7 +1263,7 @@ def report(repo: Repo, latest: dict[str, str], witness: WitnessFn) -> RepoReport
     return RepoReport(repo.name, repo.role, g.branch, g.dirty, stray, release, verdict)
 ```
 
-- [ ] **Step 4: Add the `status` command to `cli.py`**
+- [x] **Step 4: Add the `status` command to `cli.py`**
 
 Append to `src/bench_ops/cli.py` (imports at top of the file: `from rich.table import Table as RichTable`, `from bench_ops.status import latest_tags, report`, `from bench_ops.hf import HfHub, Witness, verify_manifest`, `from bench_ops.models import LedgerEntry, Manifest`):
 
@@ -1308,12 +1310,12 @@ def status(
         raise typer.Exit(1)
 ```
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [x] **Step 5: Run tests to verify they pass**
 
 Run: `cd ~/bench && uv run pytest -q`
 Expected: all tests pass (`27 passed`)
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 cd ~/bench && git add src/bench_ops/status.py src/bench_ops/cli.py tests/test_status.py
@@ -1329,7 +1331,7 @@ git commit -m "feat: bench status reports branches, worktrees and release witnes
 - Modify: `~/bench/src/bench_ops/cli.py` (register `hook_app` commands)
 - Test: `~/bench/tests/test_hooks.py`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/test_hooks.py
@@ -1386,12 +1388,12 @@ def test_cli_secrets_without_tool_fails_with_hint(tmp_path: Path, monkeypatch) -
     assert r.exit_code == 1 and "brew install ripsecrets" in r.output
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cd ~/bench && uv run pytest tests/test_hooks.py -q`
 Expected: `ModuleNotFoundError: No module named 'bench_ops.hooks'`
 
-- [ ] **Step 3: Write `src/bench_ops/hooks.py`**
+- [x] **Step 3: Write `src/bench_ops/hooks.py`**
 
 ```python
 """Pre-commit checks every linked repo runs through lefthook. Each must finish in seconds."""
@@ -1435,7 +1437,7 @@ def secrets_command(files: list[Path]) -> list[str] | None:
     return None
 ```
 
-- [ ] **Step 4: Register the hook commands in `cli.py`**
+- [x] **Step 4: Register the hook commands in `cli.py`**
 
 Append to `src/bench_ops/cli.py` (import `from bench_ops.hooks import secrets_command, size_guard`):
 
@@ -1463,12 +1465,12 @@ def hook_secrets(files: list[Path] = typer.Argument(...)) -> None:
         raise typer.Exit(rc)
 ```
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [x] **Step 5: Run tests to verify they pass**
 
 Run: `cd ~/bench && uv run pytest -q`
 Expected: all pass (`33 passed`)
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 cd ~/bench && git add src/bench_ops/hooks.py src/bench_ops/cli.py tests/test_hooks.py
@@ -1485,7 +1487,7 @@ git commit -m "feat: bench hook size-guard and secrets for lefthook"
 - Create: `~/bench/docs/CONTRACT.md`
 - Create: `~/bench/lefthook.yml` (bench-ops guards itself with the same config)
 
-- [ ] **Step 1: Write `lefthook/common.yml`**
+- [x] **Step 1: Write `lefthook/common.yml`**
 
 ```yaml
 # Pulled into every linked repo through `remotes:` (see REPO-lefthook.yml). Edit here only.
@@ -1513,7 +1515,7 @@ pre-push:
         bench status --offline --fail-on-stale --repo "$(git rev-parse --show-toplevel)"'
 ```
 
-- [ ] **Step 2: Write `lefthook/REPO-lefthook.yml`**
+- [x] **Step 2: Write `lefthook/REPO-lefthook.yml`**
 
 ```yaml
 # Hooks for this repo live in github.com/arthrod/bench-ops/lefthook. Do not add jobs here;
@@ -1528,7 +1530,7 @@ remotes:
 
 Producer- and consumer-specific files (`lefthook/producer.yml`: verify `release/index.jsonl` on change; `lefthook/consumer.yml`: `bench fetch --verify` + the repo's proof on `bench.lock` change) are added by Plans 2 and 4, where the commands they call exist. YAGNI now.
 
-- [ ] **Step 3: Write `~/bench/lefthook.yml`** (bench-ops uses its own local file, not remotes, so hook edits are testable before push)
+- [x] **Step 3: Write `~/bench/lefthook.yml`** (bench-ops uses its own local file, not remotes, so hook edits are testable before push)
 
 ```yaml
 pre-commit:
@@ -1545,7 +1547,7 @@ pre-commit:
       run: uv run pytest -q
 ```
 
-- [ ] **Step 4: Write `docs/CONTRACT.md`**
+- [x] **Step 4: Write `docs/CONTRACT.md`**
 
 ```markdown
 # The storage contract
@@ -1571,14 +1573,14 @@ A local file may be deleted only when its sha256 is listed in a release manifest
 - Hooks come from `bench-ops/lefthook/` through lefthook `remotes:`; escape hatches are `LEFTHOOK=0` and `BENCH_ALLOW_STALE=1`.
 ```
 
-- [ ] **Step 5: Verify the remote-config syntax parses**
+- [x] **Step 5: Verify the remote-config syntax parses**
 
 ```bash
 cd ~/bench && lefthook install && lefthook dump
 ```
 Expected: the dump lists `pre-commit` with jobs `size guard`, `secrets`, `ruff`, `tests` and no YAML errors. Then `lefthook validate-config lefthook/common.yml` if the installed lefthook has it (≥1.10); otherwise the dump in Task 10 Step 3 is the check.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 cd ~/bench && git add lefthook.yml lefthook/common.yml lefthook/REPO-lefthook.yml docs/CONTRACT.md
@@ -1593,7 +1595,7 @@ git commit -m "feat: shared lefthook config and the storage contract"
 - Create in each linked repo: `lefthook.yml` (ndb replaces its untouched example file)
 - Create: `~/bench/docs/plans/2026-11-02-plan1-bench-ops.md` (copy of this plan)
 
-- [ ] **Step 1: Install the CLI globally and check tools**
+- [x] **Step 1: Install the CLI globally and check tools**
 
 ```bash
 cd ~/bench && uv tool install --editable . && bench --help
@@ -1601,7 +1603,7 @@ brew list lefthook ripsecrets >/dev/null 2>&1 || brew install lefthook ripsecret
 ```
 Expected: `bench --help` lists `sync`, `status`, `hook`.
 
-- [ ] **Step 2: Create the GitHub repo and push** (outward-facing: **confirm with Arthur first**)
+- [x] **Step 2: Create the GitHub repo and push** (outward-facing: **confirm with Arthur first**)
 
 ```bash
 cd ~/bench && mkdir -p docs/plans && cp ~/.claude/plans/cuddly-exploring-neumann.md docs/plans/2026-11-02-plan1-bench-ops.md
@@ -1609,7 +1611,7 @@ git add docs/plans && git commit -m "docs: plan 1 (bench-ops)"
 gh repo create arthrod/bench-ops --public --source . --push
 ```
 
-- [ ] **Step 3: Install hooks in each linked repo** (one small PR per repo; results and code never in the same commit)
+- [x] **Step 3: Install hooks in each linked repo** (one small PR per repo; results and code never in the same commit)
 
 For each of the four paths in `repos.toml`:
 
@@ -1626,7 +1628,7 @@ git push -u origin chore/bench-ops-hooks && gh pr create --fill
 ```
 Then merge through `/conejo-merge`. For ndb the commit replaces the example `lefthook.yml`.
 
-- [ ] **Step 4: Prove the hooks bite**
+- [x] **Step 4: Prove the hooks bite**
 
 In ndb (on the branch, before merging):
 
@@ -1637,14 +1639,14 @@ git commit -m "probe" ; echo "exit=$?"
 ```
 Expected: `results/_hook_probe.bin: 2.9 MB over the 2.0 MB limit`, `exit=1`. Then `git reset -q results/_hook_probe.bin && rm results/_hook_probe.bin`.
 
-- [ ] **Step 5: Run `bench sync` and `bench status` against the real workspace**
+- [x] **Step 5: Run `bench sync` and `bench status` against the real workspace**
 
 ```bash
 bench sync && bench status --offline
 ```
 Expected: four rows; ndb and editors_trial show `no releases yet`; benchmarks-law and jubarte-app show `no bench.lock`; ndb's stray worktrees column lists `../ndb-105` and `../ndb-apryse` (to be moved under `.worktrees/` in Plan 2's cheap wins); every row prints `pulled`.
 
-- [ ] **Step 6: Record the baseline numbers** (the before-state for every later plan's verification)
+- [x] **Step 6: Record the baseline numbers** (the before-state for every later plan's verification)
 
 ```bash
 for r in neurotic_docx_bench editors_trial briefs_agreements/benchmarks-law 1_jubarte-redlines/jubarte-app; do
