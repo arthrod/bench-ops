@@ -68,12 +68,12 @@ run = "uv run python -m neurotic_docx_bench.jubarte_release_info {version}"
 [[pipelines.jubarte.steps]]
 name = "report-and-release-views"
 repo = "ndb"
-run = "uv run bench report && uv run scripts/release_views.py"
+run = "uv run bench report && uv run scripts/release_views.py --release-version {version}"
 
 [[pipelines.jubarte.steps]]
 name = "stage-pages-and-upload-r2"
 repo = "ndb"
-run = "uv run python scripts/publish/release_pages.py {version}"
+run = "uv run bench release-pages {version} && uv run --with httpx python scripts/publish/upload_r2.py out/release-pages/{version} release/{version} && uv run --with httpx python scripts/publish/upload_r2.py out/release-pages/{version} release/{version} --verify"
 
 [[pipelines.jubarte.steps]]
 name = "publish-ndb"
