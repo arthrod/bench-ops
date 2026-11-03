@@ -26,7 +26,7 @@ from bench_ops.models import FileEntry, HfRef, LedgerEntry
 from bench_ops.publish import PublishError, publish, stage
 from bench_ops.status import report
 from tests.test_cli_plan2 import _clone, _config
-from tests.test_gc import SHA_A, _entry, _hub, _manifest, _verified
+from tests.test_gc import SHA_A, _age, _entry, _hub, _manifest, _verified
 from tests.test_gitx import make_origin
 from tests.test_publish import CREATED, HF_REPO, TAG, FakeHub, _producer, _repo
 
@@ -244,6 +244,7 @@ def test_m1_gc_refuses_to_unlink_a_file_that_changed_after_hashing(
     out.mkdir()
     f = out / "a.bin"
     f.write_bytes(BYTES_A)
+    _age(f)
     m = _manifest(FileEntry(path=f"release/{TAG}/out/a.bin", sha256=SHA_A, bytes=3))
     v = verdicts([f], [_verified(m)], set())[0]
     assert v.deletable and v.current()
@@ -252,6 +253,7 @@ def test_m1_gc_refuses_to_unlink_a_file_that_changed_after_hashing(
     assert not v.current()
 
     f.write_bytes(BYTES_A)
+    _age(f)
     stale = verdicts([f], [_verified(m)], set())[0]  # hashed, then swapped again
     f.write_bytes(b"NEW-BYTES-NOT-VERIFIED")
     monkeypatch.setattr(bench_ops.cli, "verdicts", lambda *a, **k: [stale])
@@ -276,6 +278,7 @@ def test_m2_gc_resolves_paths_before_the_git_check(tmp_path: Path) -> None:
     outside = tmp_path / "elsewhere" / "a.bin"
     outside.parent.mkdir(parents=True)
     outside.write_bytes(BYTES_A)
+    _age(root / "out" / "a.bin", outside)
     m = _manifest(FileEntry(path=f"release/{TAG}/out/a.bin", sha256=SHA_A, bytes=3))
     vs = {
         v.path: v

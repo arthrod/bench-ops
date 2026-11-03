@@ -1,6 +1,7 @@
 """fetch_verified/verdicts (plan 2): gc authority is unforgeable and fail-closed (D1/D3/D22)."""
 
 import hashlib
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -9,6 +10,13 @@ from bench_ops.models import FileEntry, HfRef, LedgerEntry, Manifest, dumps
 
 HF_REPO = "arthrod/neurotic_docx_bench"
 CREATED = datetime(2026, 11, 3, tzinfo=UTC)
+
+
+def _age(*paths: Path) -> None:
+    """Files written by a finished run: older than CREATED, whatever today's date is."""
+    t = datetime(2026, 1, 1, tzinfo=UTC).timestamp()
+    for q in paths:
+        os.utime(q, (t, t))
 TAG = "ndb-v1.0.0"
 
 A, S, U = b"aaa", b"served-bytes", b"unverified-bytes"
@@ -114,6 +122,7 @@ def test_verdicts_deletable_only_when_verified_unserved_and_unblocked(tmp_path: 
     a.write_bytes(A)
     served.write_bytes(S)
     unv.write_bytes(U)
+    _age(a, served, unv)
     vs: dict[Path, Verdict] = {
         v.path: v for v in verdicts([a, served, unv], [_verified(m)], {SHA_U})
     }
@@ -131,6 +140,7 @@ def test_verdicts_never_delete_git_paths(tmp_path: Path) -> None:
     out.mkdir()
     a = out / "a.bin"
     a.write_bytes(A)
+    _age(a)
     vs = {v.path: v for v in verdicts([a, git_file], [_verified(m)], set())}
     assert vs[a].deletable  # positive control: the sha is listed and unblocked
     git_verdict = vs.get(git_file)
@@ -147,6 +157,7 @@ def test_verdicts_skip_directories_and_symlinks(tmp_path: Path) -> None:
     d.mkdir()
     link = out / "link.bin"
     link.symlink_to(a)
+    _age(a)
     vs = {v.path: v for v in verdicts([a, d, link], [_verified(m)], set())}
     assert vs[a].deletable
     for p in (d, link):
