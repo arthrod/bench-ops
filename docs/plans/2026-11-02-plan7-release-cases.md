@@ -57,6 +57,9 @@ Steps 1–2 refuse to start unless Word answers and PRs #102 / #104's fixes are 
 ### D4. One renderer, ndb's
 ndb's `_build` pipeline moves to `main` as `src/neurotic_docx_bench/pages/render.py`: mutool (MuPDF), 150 DPI scoring, shown pages at 180→120 DPI, 16-colour lossless WebP. Page cap raised from 3 to **12** with per-page scores kept, because jubarte.pro shows 12 pages and per-page scores today. `site_fixtures.py stage/upload/render` is deleted from jubarte-site once jubarte.pro renders from the ndb shards.
 
+### D4'. Arthur, 2026-11-03: up to 12 pages stored at 180 DPI (option 3; supersedes D4's resolution)
+Shown pages: the first `min(12, page count)` pages of every PDF, rasterised by MuPDF and **stored at 180 DPI** (no ×2/3 downscale), 16-colour median-cut, lossless WebP method 4. Measured on the fixed sets (135 sampled pages, `/tmp/rsize/measure.py`): 45.8 KB/page; 34 431 page images for the whole site = **1.58 GB** (2.7× today's 0.58 GB), **282 MB per jubarte release**. Scoring stays at 144 DPI on every page; per-page scores are kept for the shown pages.
+
 ### D5. Viewer parity before anything is deleted (bench-viewer)
 bench-viewer gains what only jubarte.pro has: per-page scores, links to the case's files on HF, up to 12 pages. It also gets random-case-on-open from the old viewer. jubarte.pro's Cases page switches to bench-viewer with the jubarte theme only after a side-by-side check by Arthur.
 
