@@ -77,3 +77,14 @@ def test_different_remote() -> None:
     from bench_ops.config import same_remote
 
     assert not same_remote("https://github.com/arthrod/a", "https://github.com/arthrod/b")
+
+
+def test_default_root_is_t_bench_when_bench_root_is_unset(monkeypatch, tmp_path):
+    """bench-ops lives at ~/T/bench (bench-ops#28); BENCH_ROOT still overrides."""
+    from bench_ops.config import default_root
+
+    monkeypatch.delenv("BENCH_ROOT", raising=False)
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    assert default_root() == tmp_path / "T" / "bench"
+    monkeypatch.setenv("BENCH_ROOT", str(tmp_path / "elsewhere"))
+    assert default_root() == tmp_path / "elsewhere"
