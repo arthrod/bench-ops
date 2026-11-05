@@ -15,6 +15,7 @@ from rich.console import Console
 from rich.table import Table as RichTable
 
 from bench_ops.archive import archive as archive_release
+from bench_ops.checkout import CheckoutError, checkout_problems, release_tree, scratch_tree
 from bench_ops.config import Config, load_config
 from bench_ops.fetch import LOCK as LOCK_NAME
 from bench_ops.fetch import FetchError, check_tree
@@ -27,7 +28,7 @@ from bench_ops.gc import (
     tracked_in,
     verdicts,
 )
-from bench_ops.gitx import clone_or_pull, git, origin_url
+from bench_ops.gitx import clean_env, clone_or_pull, git, origin_url
 from bench_ops.hf import HfHub, Witness, sha256_of, verify_manifest
 from bench_ops.hooks import ledger_problems, secrets_command, size_guard
 from bench_ops.models import LedgerEntry, Lock, Manifest, dumps, manifest_path
@@ -39,7 +40,7 @@ from bench_ops.pipeline import (
     preflight,
     word_probe,
 )
-from bench_ops.publish import PublishError, run_script
+from bench_ops.publish import PublishError, push_release, run_script, validate_tag
 from bench_ops.publish import publish as publish_release
 from bench_ops.status import latest_tags, report
 from bench_ops.work import parse_duration, remove, scan
@@ -202,15 +203,26 @@ def publish_cmd(
     dry_run: Annotated[
         bool, typer.Option(help="Local checks and staging only: no hub calls, no writes.")
     ] = False,
+    version: Annotated[
+        str | None,
+        typer.Option(help="X.Y.Z filled into {version} of the producer's before commands "
+                          "(ndb: the jubarte release whose views this publishes)."),
+    ] = None,
+    push: Annotated[
+        bool, typer.Option(help="Push release/<tag> and the tag, then open the PR.")
+    ] = False,
 ) -> None:
     """Upload a producer's release to Hugging Face, verify it, then record it (plan 2).
 
-    Runs the producer's own `before` scripts (its [repos.release], rev 3) in its checkout
-    first — pages current, stores uploaded — stopping at the first failure; nothing here
-    repeats what they already do. Resumable and idempotent (C3): rerunning after a failure
+    Works in a fresh worktree of origin/<branch> at <BENCH_ROOT>/.work/release-<tag>, on
+    branch release/<tag> (plan 8): the configured checkout's branch and dirt never reach a
+    release. Runs the producer's own `before` scripts (its [repos.release], rev 3) there
+    first — pages current, stores uploaded — stopping at the first failure or at any tracked
+    change they leave. Resumable and idempotent (C3): rerunning reuses the release worktree,
     adopts what is already on the Hub and creates only the missing records; every step
-    prints `did` or `done`. Never pushes git: the ledger commit and the tag stay local
-    until the printed push command is run by hand.
+    prints `did` or `done`. With --push the branch and tag are pushed and the PR opened;
+    without it the push commands are printed. --dry-run stages from the configured checkout
+    and writes nothing.
     """
     cfg = _config()
     try:
@@ -220,16 +232,28 @@ def publish_cmd(
         console.print(f"[red]unknown repo {producer!r}; known: {known}[/]")
         raise typer.Exit(1) from None
     try:
-        m = publish_release(repo, tag, HfHub(), now=datetime.now(UTC), dry_run=dry_run)
-    except PublishError as e:
+        validate_tag(tag)  # before any worktree or fetch: a bad tag names nothing to make
+        if not dry_run:
+            tree = release_tree(repo, tag)
+            console.print(f"release tree: {tree} (release/{tag} from origin/{repo.branch})")
+            repo = repo.model_copy(update={"path": tree})
+        m = publish_release(repo, tag, HfHub(), now=datetime.now(UTC), dry_run=dry_run,
+                            version=version)
+        console.print(dumps(m), markup=False, highlight=False)
+        if dry_run:
+            return
+        if push:
+            push_release(repo.local_path, tag, cfg.by_name(producer).branch)
+        else:
+            console.print(
+                push_hint(repo.local_path, _current_branch(repo.local_path), repo.branch, tag)
+            )
+    except (PublishError, CheckoutError) as e:
         console.print(f"[red]{e}[/]")
         raise typer.Exit(1) from None
     except Exception as e:  # noqa: BLE001 -- a failed publish is a message, never a traceback (M6)
         console.print(f"[red]{type(e).__name__}: {e}[/]", markup=False, highlight=False)
         raise typer.Exit(1) from None
-    console.print(dumps(m), markup=False, highlight=False)
-    if not dry_run:
-        console.print(push_hint(repo.local_path, _current_branch(repo.local_path), repo.branch, tag))
 
 
 def _current_branch(path: Path) -> str:
@@ -250,6 +274,56 @@ def push_hint(path: Path, current: str, default: str, tag: str) -> str:
     if current != default:
         hint += f"\nthen open a PR: (cd {path} && gh pr create --base {default} --head {current})"
     return hint
+
+
+@app.command(
+    "exec",
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+)
+def exec_cmd(
+    ctx: typer.Context,
+    repo_name: Annotated[str, typer.Argument(help="Repo name in repos.toml.")],
+    main: Annotated[
+        bool,
+        typer.Option("--main", help="Run in a fresh detached worktree of origin/<branch> "
+                                    "(removed afterwards unless the command left files)."),
+    ] = False,
+) -> None:
+    """Run a command in a repo's checkout, from anywhere (plan 8).
+
+    `bench exec ndb -- uv run bench report --check` is `uv run bench report --check` in
+    ndb's configured checkout; with --main it runs on what origin's branch holds now,
+    whatever that checkout is on. The exit code is the command's.
+    """
+    cfg = _config()
+    try:
+        repo = cfg.by_name(repo_name)
+    except KeyError:
+        known = ", ".join(r.name for r in cfg.repos)
+        console.print(f"[red]unknown repo {repo_name!r}; known: {known}[/]")
+        raise typer.Exit(1) from None
+    args = list(ctx.args)
+    if not args:
+        console.print("[red]no command; e.g. bench exec ndb -- uv run bench report --check[/]")
+        raise typer.Exit(2)
+
+    def run_in(cwd: Path) -> int:
+        env = {k: v for k, v in clean_env().items() if k != "VIRTUAL_ENV"}
+        return subprocess.run(args, cwd=str(cwd), env=env, check=False).returncode
+
+    try:
+        if main:
+            with scratch_tree(repo) as tree:
+                code = run_in(tree)
+        else:
+            code = run_in(repo.local_path)
+    except CheckoutError as e:
+        console.print(f"[red]{e}[/]")
+        raise typer.Exit(1) from None
+    except FileNotFoundError as e:
+        console.print(f"[red]{e}[/]")
+        raise typer.Exit(127) from None
+    raise typer.Exit(code)
 
 
 @app.command("bump")
@@ -402,6 +476,19 @@ def deploy_cmd(
         console.print(
             f"[red]{repo.name} is a {repo.role}; bench deploy runs a consumer's site, "
             "a producer releases with bench publish[/]"
+        )
+        raise typer.Exit(1) from None
+
+    try:
+        problems = checkout_problems(repo.local_path, repo.branch)  # plan 8
+    except CheckoutError as e:
+        problems = [str(e)]
+    if problems:
+        for problem in problems:
+            console.print(f"[red]{problem}[/]")
+        console.print(
+            f"[red]{repo.name} deploys only from a clean {repo.branch} up to date with origin; "
+            "commit, merge and `bench sync` first[/]"
         )
         raise typer.Exit(1) from None
 

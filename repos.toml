@@ -10,7 +10,16 @@ path = "/Users/arthrod/temp/T/neurotic_docx_bench"
 [repos.release]
 hf_repo = "arthrod/neurotic_docx_bench"
 private = false  # the public record dataset (H2: visibility is checked, never assumed)
-before = ["uv run bench report --check", "uv run scripts/release_views.py --check", "uv run bench results upload"]
+# Plan 8: run by `bench publish ndb <tag> --version X.Y.Z` in a fresh worktree of origin/main
+# (.work/release-<tag>): the inputs the views read come back from the hub, pinned; the views are
+# built for that version and must leave every tracked page as committed; then the stores upload.
+before = [
+  "uv run bench report --check",
+  "uv run scripts/release_inputs.py --release-version {version}",
+  "uv run scripts/release_views.py --release-version {version}",
+  "uv run scripts/release_views.py --check",
+  "uv run bench results upload",
+]
 files = [  # plan 3b: cases + speed beside the scores (results/release/ is git-ignored, written by scripts/release_views.py, PEP 723: ndb#134)
   "results/scores.json",
   "results/release/cases/index.json",
@@ -35,7 +44,6 @@ name = "benchmarks-law"
 url = "https://github.com/arthrod/benchmarks-law.git"
 branch = "main"
 role = "consumer"
-path = "/Users/arthrod/temp/T/key-digest-runner/.scratch/briefs_agreements/benchmarks-law"
 deploy = "pnpm run deploy"
 
 [[repos]]
@@ -78,7 +86,7 @@ run = "uv run bench release-pages {version} && uv run --with httpx python script
 [[pipelines.jubarte.steps]]
 name = "publish-ndb"
 repo = "ndb"
-run = "bench publish ndb {tag}"
+run = "bench publish ndb {tag} --version {version} --push"
 
 [[pipelines.jubarte.steps]]
 name = "bump-and-fetch-jubarte-app"

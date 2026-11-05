@@ -37,6 +37,18 @@ class ReleaseSpec(BaseModel):
     served: list[str] = []
     private: bool = True  # the dataset's required visibility, checked before any upload (H2)
 
+    @model_validator(mode="after")
+    def _known_placeholders(self) -> ReleaseSpec:
+        """Plan 8: `{version}` (bench publish --version) is the one placeholder `before` takes."""
+        for command in self.before:
+            for placeholder in re.findall(r"\{([^{}]+)\}", command):
+                if placeholder != "version":
+                    raise ValueError(
+                        f"before command {command!r} has unknown placeholder {{{placeholder}}}; "
+                        "only {version} is filled in"
+                    )
+        return self
+
 
 class PipelineStep(BaseModel):
     """One ordered command in a release pipeline.

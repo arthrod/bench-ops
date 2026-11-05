@@ -245,18 +245,64 @@ def _refuse_local_traces(root: Path, ledger: Path, tag: str) -> None:
         raise PublishError(f"tag {tag} already exists as a local git tag")
 
 
-def _run_before(spec: ReleaseSpec, repo_root: Path, dry_run: bool,
+VERSION = re.compile(r"\d+\.\d+\.\d+")
+
+
+def before_commands(spec: ReleaseSpec, version: str | None) -> list[str]:
+    """`before` with `{version}` filled in (plan 8). A command that names `{version}` needs
+    one: the release bundle it builds (ndb's versioned case shards) is not recorded in git,
+    so it must come from the caller, never from whatever a git-ignored folder last held."""
+    if version is not None and VERSION.fullmatch(version) is None:
+        raise PublishError(f"--version must be X.Y.Z, not {version!r}")
+    needs = [c for c in spec.before if "{version}" in c]
+    if needs and version is None:
+        raise PublishError(
+            f"the release's before command {needs[0]!r} needs --version X.Y.Z "
+            "(the version whose views this release publishes)"
+        )
+    return [c.replace("{version}", version or "") for c in spec.before]
+
+
+def _run_before(commands: list[str], repo_root: Path, dry_run: bool,
                 run: Callable[[str, Path], int]) -> None:
     """Step 0 (rev 3): the producer's own scripts, in its checkout, before any hub call.
 
-    dry_run prints the commands and runs none; a real run stops at the first nonzero exit.
+    dry_run prints the commands and runs none; a real run stops at the first nonzero exit,
+    then refuses a tracked change (plan 8): the bundle is published only when the pages it is
+    built from are the committed ones.
     """
-    for command in spec.before:
+    for command in commands:
         print(f"before: {command}")
         if dry_run:
             continue
         if run(command, repo_root) != 0:
             raise PublishError(f"before command failed: {command}")
+    if dry_run or not commands:
+        return
+    changed = (_git_opt(repo_root, "status", "--porcelain", "--untracked-files=no") or "").splitlines()
+    if changed:
+        names = ", ".join(line[3:] for line in changed[:5])
+        raise PublishError(
+            f"the before commands changed tracked files ({names}); the published views must be "
+            "the committed ones — commit the regenerated pages on the branch first"
+        )
+
+
+def push_release(root: Path, tag: str, branch: str,
+                 run: Callable[[str, Path], int] = run_script) -> None:
+    """Plan 8 `--push`: the release branch and tag to origin, then the PR to `branch`.
+
+    A PR that already exists (a resumed publish) is not an error; a failed push is."""
+    head = f"release/{tag}"
+    for command in (f"git push -u origin {head}", f"git push origin {tag}"):
+        print(f"push: {command}")
+        if run(command, root) != 0:
+            raise PublishError(f"{command} failed in {root}")
+    create = (f"gh pr create --base {branch} --head {head} --title 'release: {tag}' "
+              f"--body 'The ledger line and manifest of {tag}, written by bench publish.'")
+    print(f"push: {create}")
+    if run(create, root) != 0 and run(f"gh pr view {head}", root) != 0:
+        raise PublishError(f"no PR for {head}: `gh pr create` failed and none exists")
 
 
 def _adopt_hub_release(hub: Hub, repo: Repo, tag: str,
@@ -391,6 +437,7 @@ def publish(
     now: datetime,
     dry_run: bool,
     run: Callable[[str, Path], int] = run_script,
+    version: str | None = None,
 ) -> Manifest:
     """Run the state machine; returns the manifest as recorded (`hf.revision` is R1)."""
     spec = repo.release
@@ -399,6 +446,7 @@ def publish(
     if spec.served:
         raise PublishError("R2 mirror needs a content witness; see review D2/D3/D11–D13")
     validate_tag(tag)
+    commands = before_commands(spec, version)
 
     root = repo.local_path
     ledger = root / "release" / "index.jsonl"
@@ -407,7 +455,7 @@ def publish(
 
     if dry_run:  # local checks and staging only: no hub traffic, no writes
         _refuse_local_traces(root, ledger, tag)
-        _run_before(spec, root, dry_run=True, run=run)
+        _run_before(commands, root, dry_run=True, run=run)
         staged = stage(root, spec.files)
         return Manifest(
             tag=tag,
@@ -421,7 +469,7 @@ def publish(
             ],
         )
 
-    _run_before(spec, root, dry_run=False, run=run)
+    _run_before(commands, root, dry_run=False, run=run)
     if not hub.repo_exists(spec.hf_repo):  # plan 6 A: publishing never creates repos
         raise PublishError(
             f"Hugging Face dataset {spec.hf_repo} does not exist — create it private on the "
