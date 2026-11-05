@@ -8,7 +8,7 @@ Every byte the benches produce has exactly one role per surface. If you cannot n
 | **R2** `neurotic-docx-bench-pages`, `benchmarks-law-media`, `jubarte-live-bench-artifacts` | **serving cache** | holds only what a site serves (`FileEntry.served`), under `<tag>/`; always rebuildable from HF + manifest; may be wiped |
 | **Git** (four repos) | code, configs, **small ledgers**: `release/index.jsonl`, `bench.lock`, `data/facts.jsonl`, REPORT/RESULTS markdown | no file over 2 MB, no binaries under data dirs (`bench hook size-guard`); no history rewrites |
 | **Workers / GitHub Pages** | apps and viewers | point at R2; never embed data that is not in a tagged release |
-| **Local disk** `~/bench/.work/<repo>/<run>` | scratch | deletable only by the two-witness rule |
+| **Local disk** `~/T/bench/.work/<repo>/<run>` | scratch | deletable only by the two-witness rule |
 
 ## The Hugging Face datasets (surveyed 2026-11-02)
 
@@ -39,7 +39,7 @@ A local file may be deleted only when its sha256 is listed in a release manifest
 - They run locally in seconds, all on pre-commit: size guard, ripsecrets, the ledger check, and `bench status --fail-on-stale`. No CI gate.
 - No pre-push or post-* hooks: those belong to git-lfs, and lefthook taking them over makes pushes from branches without this config skip LFS uploads silently.
 - Escape hatches: `LEFTHOOK=0` skips all hooks; `BENCH_ALLOW_STALE=1` lets a commit through with a lock behind its producer.
-- Requirements on each machine: `uv tool install --editable ~/bench` (or `uv tool install git+https://github.com/arthrod/bench-ops`), `brew install lefthook ripsecrets`.
+- Requirements on each machine: `uv tool install --editable ~/T/bench` (or `uv tool install git+https://github.com/arthrod/bench-ops`), `brew install lefthook ripsecrets`.
 - Lefthook fails open: if the first fetch of the shared config fails, it installs no jobs. `bench sync` checks for that and exits 1 with `HOOKS NOT ACTIVE`; after one successful fetch the cached copy works offline.
 - `ref: main` is deliberate (decision D5): a hook change lands once, here, instead of as four pin bumps. The trust boundary is push access to `arthrod/bench-ops` main.
 - `bench status --repo <path>` matches a checkout by configured path, else by origin URL, so clones and worktrees elsewhere get the same release-state check.

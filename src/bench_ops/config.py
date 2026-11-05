@@ -151,7 +151,7 @@ class Config(BaseModel):
     def for_checkout(self, path: Path, origin_url: str | None) -> Repo | None:
         """The linked repo a checkout belongs to: by configured path, else by origin URL.
 
-        A clone or worktree elsewhere (another machine, ~/bench/.work) matches by its origin and
+        A clone or worktree elsewhere (another machine, ~/T/bench/.work) matches by its origin and
         is reported at its own path, so hooks check the checkout actually being pushed.
         """
         path = path.resolve()
@@ -183,7 +183,7 @@ def same_remote(a: str, b: str) -> bool:
 
 
 def default_root() -> Path:
-    return Path(os.environ.get("BENCH_ROOT", Path.home() / "bench")).expanduser()
+    return Path(os.environ.get("BENCH_ROOT", Path.home() / "T" / "bench")).expanduser()
 
 
 def load_config(root: Path | None = None) -> Config:

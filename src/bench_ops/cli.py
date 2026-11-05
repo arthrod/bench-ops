@@ -55,7 +55,7 @@ def _config() -> Config:
         return load_config()
     except FileNotFoundError as e:
         console.print(
-            f"[red]no repos.toml at {e.filename}; set BENCH_ROOT or clone bench-ops to ~/bench[/]"
+            f"[red]no repos.toml at {e.filename}; set BENCH_ROOT or clone bench-ops to ~/T/bench[/]"
         )
         raise typer.Exit(2) from None
     except ValidationError as e:

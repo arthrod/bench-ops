@@ -12,7 +12,7 @@ Read this first when you work on any of the bench repositories. It says which re
 | `jubarte-app` = arthrod/jubarte-app | `~/temp/T/1_jubarte-redlines/jubarte-app` | consumer | jubarte.pro (`jubarte-site/`, product-focused). Every number it prints is a record in `data/facts.jsonl`; the benchmark page is proved against the evidence before deploy. | `jubarte-site/scripts/release.sh` header, `scripts/facts.py` |
 | jandira-tech/jubarte-redlines (not in `repos.toml`) | `~/temp/T/jubarte-redlines` | engine | The jubarte engine. Its release writes `release_info/website_data_<v>_<stamp>.jsonl` and the sample results JSONs that jubarte.pro's sample tables come from. | `scripts/release.sh` header |
 
-`bench-ops` (this repo, `~/bench`) holds no data. It links the repos (`repos.toml`), defines the release contract (`src/bench_ops/models.py`), and ships the `bench` command and the shared git hooks (`lefthook/common.yml`).
+`bench-ops` (this repo, `~/T/bench`) holds no data. It links the repos (`repos.toml`), defines the release contract (`src/bench_ops/models.py`), and ships the `bench` command and the shared git hooks (`lefthook/common.yml`).
 
 ## How data flows
 
@@ -31,8 +31,8 @@ Storage roles (full text: `docs/CONTRACT.md`): **Hugging Face is the record, R2 
 ## Machine setup (once)
 
 ```bash
-git clone https://github.com/arthrod/bench-ops ~/bench
-uv tool install --editable ~/bench          # the `bench` command; elsewhere: uv tool install git+https://github.com/arthrod/bench-ops
+git clone https://github.com/arthrod/bench-ops ~/T/bench
+uv tool install --editable ~/T/bench          # the `bench` command; elsewhere: uv tool install git+https://github.com/arthrod/bench-ops
 brew install lefthook ripsecrets
 bench sync                                  # clone/fast-forward every repo, install hooks; exits 1 on HOOKS NOT ACTIVE
 bench status                                # branch, dirt, stray worktrees, release ledger per repo (--offline skips HF); the `.work/` pen is not "stray"
