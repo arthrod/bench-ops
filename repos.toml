@@ -35,7 +35,7 @@ name = "benchmarks-law"
 url = "https://github.com/arthrod/benchmarks-law.git"
 branch = "main"
 role = "consumer"
-path = "/Users/arthrod/temp/T/briefs_agreements/benchmarks-law"
+path = "/Users/arthrod/temp/T/key-digest-runner/.scratch/briefs_agreements/benchmarks-law"
 deploy = "pnpm run deploy"
 
 [[repos]]
@@ -43,7 +43,7 @@ name = "jubarte-app"
 url = "https://github.com/arthrod/jubarte-app.git"
 branch = "main"
 role = "consumer"
-path = "/Users/arthrod/temp/T/1_jubarte-redlines/jubarte-app"
+path = "/Users/arthrod/temp/T/jubarte-redlines/.worktrees/1_jubarte-redlines/jubarte-app"
 deploy = "cd jubarte-site && scripts/release.sh deploy {version}"
 
 
