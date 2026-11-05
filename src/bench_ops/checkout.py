@@ -51,6 +51,12 @@ def _work(repo: Repo) -> Path:
     return repo._root / ".work"
 
 
+def _common_dir(path: Path) -> Path:
+    """The repository a checkout or worktree belongs to (its shared .git)."""
+    out = _git(path, "rev-parse", "--path-format=absolute", "--git-common-dir").strip()
+    return Path(out).resolve()
+
+
 def release_tree(repo: Repo, tag: str) -> Path:
     """The worktree a publish of `tag` runs in; created from origin/<branch>, or reused."""
     branch = f"release/{tag}"
@@ -58,14 +64,34 @@ def release_tree(repo: Repo, tag: str) -> Path:
     if tree.exists():
         if not (tree / ".git").exists():
             raise CheckoutError(f"{tree} exists but is not a worktree on {branch}; move it aside")
+        if _common_dir(tree) != _common_dir(repo.local_path):
+            raise CheckoutError(
+                f"{tree} is a worktree of another repository, not {repo.local_path}; move it aside"
+            )
         current = _git(tree, "rev-parse", "--abbrev-ref", "HEAD").strip()
         if current != branch:
             raise CheckoutError(f"{tree} is on {current}, not {branch}; move it aside")
-        return tree  # resume: the previous run's records are in it
+        # resume. With no commits of its own (an aborted run before its release commit) it
+        # follows fresh origin, so a rerun never publishes the pages origin had back then;
+        # with a release commit, the previous run's records are in it and it stays as it is.
+        head = _fetch(repo)
+        try:
+            git(tree, "merge-base", "--is-ancestor", "HEAD", head)
+        except subprocess.CalledProcessError:
+            return tree
+        _git(tree, "merge", "--ff-only", "-q", head)
+        return tree
     head = _fetch(repo)
     tree.parent.mkdir(parents=True, exist_ok=True)
     if _git(repo.local_path, "branch", "--list", branch).strip():
-        # a branch without its worktree (removed by hand): resume on it, never reset it
+        # a branch without its worktree (removed by hand). With no commits of its own it is
+        # moved to fresh origin (a stale base would publish old pages); with commits (a
+        # previous run's release record) it is resumed as it is, never reset.
+        try:
+            git(repo.local_path, "merge-base", "--is-ancestor", branch, head)
+            _git(repo.local_path, "branch", "-f", branch, head)
+        except subprocess.CalledProcessError:
+            pass
         _git(repo.local_path, "worktree", "add", "-q", str(tree), branch)
     else:
         _git(repo.local_path, "worktree", "add", "-q", "-b", branch, str(tree), head)
@@ -89,13 +115,18 @@ def scratch_tree(repo: Repo) -> Iterator[Path]:
             _git(repo.local_path, "worktree", "remove", str(tree))
 
 
-def checkout_problems(path: Path, branch: str) -> list[str]:
-    """Why a checkout must not deploy: wrong branch, tracked changes, behind its origin."""
+def checkout_problems(path: Path, branch: str, allow: tuple[str, ...] = ()) -> list[str]:
+    """Why a checkout must not deploy: wrong branch, tracked changes, behind its origin.
+
+    `allow` names tracked files whose change is expected (deploy allows `bench.lock`: the
+    pipeline bumps it just before, and the deploy checks `.bench/` against it)."""
     problems: list[str] = []
     current = _git(path, "rev-parse", "--abbrev-ref", "HEAD").strip()
     if current != branch:
         problems.append(f"{path} is on {current}, not {branch}")
-    changed = _git(path, "status", "--porcelain", "--untracked-files=no").splitlines()
+    changed = [line for line in
+               _git(path, "status", "--porcelain", "--untracked-files=no").splitlines()
+               if line[3:] not in allow]
     if changed:
         names = ", ".join(line[3:] for line in changed[:3])
         more = f" and {len(changed) - 3} more" if len(changed) > 3 else ""

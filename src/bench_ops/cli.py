@@ -480,7 +480,7 @@ def deploy_cmd(
         raise typer.Exit(1) from None
 
     try:
-        problems = checkout_problems(repo.local_path, repo.branch)  # plan 8
+        problems = checkout_problems(repo.local_path, repo.branch, allow=("bench.lock",))  # plan 8
     except CheckoutError as e:
         problems = [str(e)]
     if problems:

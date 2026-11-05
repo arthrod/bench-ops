@@ -39,9 +39,11 @@ class ReleaseSpec(BaseModel):
 
     @model_validator(mode="after")
     def _known_placeholders(self) -> ReleaseSpec:
-        """Plan 8: `{version}` (bench publish --version) is the one placeholder `before` takes."""
+        """Plan 8: `{version}` (bench publish --version) is the one placeholder `before` takes.
+
+        Shell syntax is not a placeholder: `${VAR}`, `awk '{print $1}'`, `{a,b}`."""
         for command in self.before:
-            for placeholder in re.findall(r"\{([^{}]+)\}", command):
+            for placeholder in re.findall(r"(?<!\$)\{([A-Za-z_][A-Za-z0-9_]*)\}", command):
                 if placeholder != "version":
                     raise ValueError(
                         f"before command {command!r} has unknown placeholder {{{placeholder}}}; "

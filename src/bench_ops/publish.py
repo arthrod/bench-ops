@@ -263,29 +263,36 @@ def before_commands(spec: ReleaseSpec, version: str | None) -> list[str]:
     return [c.replace("{version}", version or "") for c in spec.before]
 
 
+def _tracked_state(repo_root: Path) -> str:
+    """Every tracked change, names and bytes; a git failure is a PublishError (fail closed)."""
+    return (_git(repo_root, "status", "--porcelain", "--untracked-files=no")
+            + _git(repo_root, "diff", "--no-ext-diff", "--binary", "HEAD"))
+
+
 def _run_before(commands: list[str], repo_root: Path, dry_run: bool,
                 run: Callable[[str, Path], int]) -> None:
     """Step 0 (rev 3): the producer's own scripts, in its checkout, before any hub call.
 
-    dry_run prints the commands and runs none; a real run stops at the first nonzero exit,
-    then refuses a tracked change (plan 8): the bundle is published only when the pages it is
-    built from are the committed ones.
+    dry_run prints the commands and runs none; a real run stops at the first nonzero exit.
+    After each command, it refuses any tracked change the command made (plan 8): the bundle
+    is published only when the pages it is built from are the committed ones, and a later
+    command (an upload) never runs after one that moved them. Changes that were there before
+    (a resumed publish's own ledger line) are compared, not refused.
     """
+    before = None if dry_run or not commands else _tracked_state(repo_root)
     for command in commands:
         print(f"before: {command}")
         if dry_run:
             continue
         if run(command, repo_root) != 0:
             raise PublishError(f"before command failed: {command}")
-    if dry_run or not commands:
-        return
-    changed = (_git_opt(repo_root, "status", "--porcelain", "--untracked-files=no") or "").splitlines()
-    if changed:
-        names = ", ".join(line[3:] for line in changed[:5])
-        raise PublishError(
-            f"the before commands changed tracked files ({names}); the published views must be "
-            "the committed ones — commit the regenerated pages on the branch first"
-        )
+        if _tracked_state(repo_root) != before:
+            now = _git(repo_root, "status", "--porcelain", "--untracked-files=no").splitlines()
+            names = ", ".join(line[3:] for line in now[:5]) or "(see git status)"
+            raise PublishError(
+                f"the before command {command!r} changed tracked files ({names}); the published "
+                "views must be the committed ones — commit the regenerated pages on the branch first"
+            )
 
 
 def push_release(root: Path, tag: str, branch: str,
@@ -301,8 +308,11 @@ def push_release(root: Path, tag: str, branch: str,
     create = (f"gh pr create --base {branch} --head {head} --title 'release: {tag}' "
               f"--body 'The ledger line and manifest of {tag}, written by bench publish.'")
     print(f"push: {create}")
-    if run(create, root) != 0 and run(f"gh pr view {head}", root) != 0:
-        raise PublishError(f"no PR for {head}: `gh pr create` failed and none exists")
+    view = (f"gh pr view {head} --json state --jq .state "
+            "| grep -qx -e OPEN -e MERGED")  # a CLOSED PR is not this release's PR
+    if run(create, root) != 0 and run(view, root) != 0:
+        raise PublishError(f"no PR for {head}: `gh pr create` failed and no open or merged "
+                           "one exists")
 
 
 def _adopt_hub_release(hub: Hub, repo: Repo, tag: str,

@@ -351,3 +351,185 @@ def test_workspace_publish_steps_use_the_version_and_push() -> None:
     assert step.run == "bench publish ndb {tag} --version {version} --push"
     blaw = cfg.by_name("benchmarks-law")
     assert blaw.path is None  # the dead override is gone; bench sync clones it under BENCH_ROOT
+
+
+# ---- review round 1 (#31) ----------------------------------------------------------------
+
+
+def test_a_resumed_publish_with_the_ledger_left_dirty_is_not_refused(tmp_path: Path) -> None:
+    """CodeRabbit/Cursor/CodeAnt: a run that appended the ledger and died leaves a tracked
+    change of its own; the guard compares before/after the commands, not against HEAD."""
+    _, checkout = _origin_and_checkout(tmp_path)
+    repo = _repo(checkout, tmp_path / "bench", before=("noop",))
+    tree = release_tree(repo, TAG)
+    (tree / "release").mkdir()
+    (tree / "release" / "index.jsonl").write_text("")
+    _sh(tree, "add", "release/index.jsonl")
+    _sh(tree, "commit", "-qm", "track the ledger")
+    (tree / "release" / "index.jsonl").write_text("left by a run that died\n")
+    with pytest.raises(PublishError) as e:
+        publish(repo.model_copy(update={"path": tree}), TAG, FakeHub(tmp_path), now=CREATED,
+                dry_run=False, run=lambda c, _: 0)
+    assert "before commands changed" not in str(e.value)  # refused later, for its own reason
+
+
+def test_the_guard_runs_after_each_command_so_the_upload_never_follows_a_change(
+    tmp_path: Path,
+) -> None:
+    _, checkout = _origin_and_checkout(tmp_path)
+    repo = _repo(checkout, tmp_path / "bench", before=("regenerate", "upload"))
+    tree = release_tree(repo, TAG)
+    ran: list[str] = []
+
+    def run(command: str, cwd: Path) -> int:
+        ran.append(command)
+        if command == "regenerate":
+            (cwd / "out" / "a.bin").write_bytes(b"moved")
+        return 0
+
+    with pytest.raises(PublishError, match="out/a.bin"):
+        publish(repo.model_copy(update={"path": tree}), TAG, FakeHub(tmp_path), now=CREATED,
+                dry_run=False, run=run)
+    assert ran == ["regenerate"]
+
+
+def test_the_guard_fails_closed_when_git_status_fails(tmp_path: Path) -> None:
+    _, checkout = _origin_and_checkout(tmp_path)
+    repo = _repo(checkout, tmp_path / "bench", before=("break git",))
+    tree = release_tree(repo, TAG)
+
+    def run(command: str, cwd: Path) -> int:
+        (cwd / ".git").unlink()  # a worktree's .git file: git status fails afterwards
+        return 0
+
+    with pytest.raises(PublishError):
+        publish(repo.model_copy(update={"path": tree}), TAG, FakeHub(tmp_path), now=CREATED,
+                dry_run=False, run=run)
+
+
+def test_push_release_refuses_when_only_a_closed_pr_exists(tmp_path: Path) -> None:
+    def run(command: str, _: Path) -> int:
+        if command.startswith("gh pr create"):
+            return 1
+        if command.startswith("gh pr view"):
+            return 1  # the state query finds no OPEN/MERGED PR
+        return 0
+
+    with pytest.raises(PublishError, match="no PR"):
+        push_release(tmp_path, TAG, "main", run=run)
+
+
+def test_push_release_checks_the_pr_state() -> None:
+    calls: list[str] = []
+    push_release(Path("."), TAG, "main",
+                 run=lambda c, _: calls.append(c) or (1 if c.startswith("gh pr create") else 0))
+    view = next(c for c in calls if c.startswith("gh pr view"))
+    assert "state" in view and "OPEN" in view and "MERGED" in view
+
+
+def test_config_accepts_shell_expansions_in_before() -> None:
+    spec = config.ReleaseSpec(
+        hf_repo=HF_REPO, files=["x"],
+        before=["echo ${HOME}", "echo ${VAR:-x}", "awk '{print $1}' f", "cp {a,b}.txt d"],
+    )
+    assert len(spec.before) == 4
+
+
+def test_a_release_branch_left_without_commits_moves_to_fresh_origin(tmp_path: Path) -> None:
+    origin, checkout = _origin_and_checkout(tmp_path)
+    repo = _repo(checkout, tmp_path / "bench")
+    tree = release_tree(repo, TAG)
+    old = git(tree, "rev-parse", "HEAD")
+    _sh(checkout, "worktree", "remove", "--force", str(tree))
+    other = tmp_path / "other"
+    subprocess.run(["git", "clone", "-q", str(origin), str(other)], check=True)
+    (other / "out" / "a.bin").write_bytes(b"newer")
+    _sh(other, "commit", "-qam", "newer")
+    _sh(other, "push", "-q", "origin", "main")
+
+    tree = release_tree(repo, TAG)
+    assert git(tree, "rev-parse", "HEAD") != old
+    assert (tree / "out" / "a.bin").read_bytes() == b"newer"
+
+
+def test_a_release_branch_with_its_own_commits_is_kept(tmp_path: Path) -> None:
+    _, checkout = _origin_and_checkout(tmp_path)
+    repo = _repo(checkout, tmp_path / "bench")
+    tree = release_tree(repo, TAG)
+    (tree / "release.txt").write_text("record\n")
+    _sh(tree, "add", "release.txt")
+    _sh(tree, "commit", "-qm", "release record")
+    mine = git(tree, "rev-parse", "HEAD")
+    _sh(checkout, "worktree", "remove", "--force", str(tree))
+    tree = release_tree(repo, TAG)
+    assert git(tree, "rev-parse", "HEAD") == mine
+
+
+def test_release_tree_refuses_a_worktree_on_another_branch(tmp_path: Path) -> None:
+    _, checkout = _origin_and_checkout(tmp_path)
+    root = tmp_path / "bench"
+    path = root / ".work" / f"release-{TAG}"
+    path.parent.mkdir(parents=True)
+    _sh(checkout, "worktree", "add", "-q", "-b", "elsewhere", str(path), "origin/main")
+    with pytest.raises(CheckoutError, match=f"release/{TAG}"):
+        release_tree(_repo(checkout, root), TAG)
+
+
+def test_release_tree_refuses_a_worktree_of_another_repository(tmp_path: Path) -> None:
+    _, checkout = _origin_and_checkout(tmp_path)
+    (tmp_path / "foreign").mkdir()
+    _, foreign = _origin_and_checkout(tmp_path / "foreign")
+    root = tmp_path / "bench"
+    path = root / ".work" / f"release-{TAG}"
+    path.parent.mkdir(parents=True)
+    _sh(foreign, "worktree", "add", "-q", "-b", f"release/{TAG}", str(path), "origin/main")
+    with pytest.raises(CheckoutError, match="another repository"):
+        release_tree(_repo(checkout, root), TAG)
+
+
+def test_bump_sees_a_release_ledger_that_is_only_on_its_release_branch(tmp_path: Path) -> None:
+    """Gitar/Cursor: after `publish --push` the new line is on release/<tag> until the PR
+    merges; the pipeline's next step (bump) must pin it, not the previous tag."""
+    from bench_ops.fetch import _newest_ledger
+
+    _, checkout = _origin_and_checkout(tmp_path)
+    repo = _repo(checkout, tmp_path / "bench")
+    tree = release_tree(repo, TAG)
+    (tree / "release").mkdir()
+    (tree / "release" / "index.jsonl").write_text("line one\n")
+    _sh(tree, "add", "release/index.jsonl")
+    _sh(tree, "commit", "-qm", f"release: {TAG}")
+    text = _newest_ledger(checkout, "main", checkout / "release" / "index.jsonl")
+    assert text == "line one\n"
+
+
+def test_checkout_problems_may_allow_the_bumped_lock(tmp_path: Path) -> None:
+    """Gitar: the pipeline bumps bench.lock and deploys; that one tracked change is what the
+    deploy verifies (.bench/ against the lock), so it may be allowed — nothing else."""
+    origin, _ = _origin_and_checkout(tmp_path)
+    clean = tmp_path / "clean"
+    subprocess.run(["git", "clone", "-q", str(origin), str(clean)], check=True)
+    (clean / "bench.lock").write_text("ndb=ndb-v0.0.1 manifest=" + "a" * 64 + "\n")
+    _sh(clean, "add", "bench.lock")
+    _sh(clean, "commit", "-qm", "lock")
+    _sh(clean, "push", "-q", "origin", "HEAD:main")
+    (clean / "bench.lock").write_text("ndb=ndb-v0.0.2 manifest=" + "b" * 64 + "\n")
+    assert checkout_problems(clean, "main", allow=("bench.lock",)) == []
+    assert checkout_problems(clean, "main") != []
+    (clean / "out" / "a.bin").write_bytes(b"other")
+    assert checkout_problems(clean, "main", allow=("bench.lock",)) != []
+
+
+def test_a_resumed_release_tree_without_commits_follows_origin(tmp_path: Path) -> None:
+    """codex: a worktree left by an aborted run (no release commit yet) must not publish the
+    pages origin had then; it is fast-forwarded to the fresh origin/<branch>."""
+    origin, checkout = _origin_and_checkout(tmp_path)
+    repo = _repo(checkout, tmp_path / "bench")
+    tree = release_tree(repo, TAG)
+    other = tmp_path / "other"
+    subprocess.run(["git", "clone", "-q", str(origin), str(other)], check=True)
+    (other / "out" / "a.bin").write_bytes(b"corrected")
+    _sh(other, "commit", "-qam", "corrected")
+    _sh(other, "push", "-q", "origin", "main")
+    assert release_tree(repo, TAG) == tree
+    assert (tree / "out" / "a.bin").read_bytes() == b"corrected"
