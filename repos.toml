@@ -52,7 +52,7 @@ url = "https://github.com/arthrod/jubarte-app.git"
 branch = "main"
 role = "consumer"
 path = "/Users/arthrod/temp/T/jubarte-redlines/.worktrees/1_jubarte-redlines/jubarte-app"
-deploy = "cd jubarte-site && scripts/release.sh deploy {version}"
+deploy = "cd jubarte-site && scripts/release.sh deploy"
 
 
 # Plan 7 D3: score one jubarte release, publish ndb, pin/fetch it in jubarte-app,

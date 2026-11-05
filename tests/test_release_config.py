@@ -122,9 +122,9 @@ def test_workspace_repos_toml_names_the_release_and_deploy_commands() -> None:
         "results/release/cases/*/*.json",
         "results/release/speed.json",
     ]
-    assert cfg.by_name("jubarte-app").deploy == (
-        "cd jubarte-site && scripts/release.sh deploy {version}"
-    )
+    # release.sh deploy reads the engine version from the committed facts: bench.lock
+    # pins the ndb release, so {version} would be the ndb tag (bench-ops issue, jubarte-app#172)
+    assert cfg.by_name("jubarte-app").deploy == "cd jubarte-site && scripts/release.sh deploy"
     assert cfg.by_name("benchmarks-law").deploy == "pnpm run deploy"
     assert cfg.by_name("editors_trial").deploy is None
 
