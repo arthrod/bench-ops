@@ -109,8 +109,10 @@ def test_workspace_repos_toml_names_the_release_and_deploy_commands() -> None:
     ndb = cfg.by_name("ndb")
     assert ndb.release is not None
     assert ndb.release.hf_repo == "arthrod/neurotic_docx_bench"
-    assert ndb.release.before == [
+    assert ndb.release.before == [  # plan 8: inputs from the hub, views for {version}
         "uv run bench report --check",
+        "uv run scripts/release_inputs.py --release-version {version}",
+        "uv run scripts/release_views.py --release-version {version}",
         "uv run scripts/release_views.py --check",
         "uv run bench results upload",
     ]
@@ -265,6 +267,6 @@ def test_workspace_repos_toml_pins_the_jubarte_pipeline() -> None:
     assert pipeline.steps[2].run.endswith(
         "upload_r2.py out/release-pages/{version} release/{version} --verify"
     )
-    assert pipeline.steps[3].run == "bench publish ndb {tag}"
+    assert pipeline.steps[3].run == "bench publish ndb {tag} --version {version} --push"
     assert pipeline.steps[4].run == "bench bump ndb && bench fetch"
     assert pipeline.steps[5].run == "bench deploy jubarte-app --yes"

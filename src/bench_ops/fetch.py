@@ -78,25 +78,58 @@ def _origin_ledger(checkout: Path, branch: str) -> str | None:
         return None
 
 
+def _release_branch_ledgers(checkout: Path) -> list[tuple[str, str]]:
+    """(branch, ledger) for every local `release/*` branch that carries a ledger (plan 8)."""
+    if not (checkout / ".git").exists():
+        return []
+    try:
+        refs = git(checkout, "for-each-ref", "--format=%(refname:short)", "refs/heads/release/")
+    except subprocess.CalledProcessError:
+        return []
+    out = []
+    for ref in refs.split():
+        try:
+            out.append((ref, git(checkout, "show", f"{ref}:release/index.jsonl")))
+        except subprocess.CalledProcessError:
+            continue
+    return out
+
+
 def _newest_ledger(checkout: Path, branch: str, ledger: Path) -> str | None:
-    """The longer of the working-tree ledger and origin/<branch>'s (#21).
+    """The longest of the working-tree ledger, origin/<branch>'s and the release branches' (#21).
 
     The ledger only grows, so one copy must be a prefix of the other. The working tree may
     be ahead (a publish commits the ledger locally and leaves the push to a human) or behind
     / on another branch (a checkout parked on a results branch); origin covers the latter.
+    Since plan 8 a publish commits the ledger on `release/<tag>` in its own worktree, so a
+    local release branch whose ledger extends that one is newer still (its PR not merged
+    yet). A release branch that does not extend it (abandoned, superseded) is ignored.
     """
     local = ledger.read_text() if ledger.exists() else None
     remote = _origin_ledger(checkout, branch)
     if local is None or remote is None:
-        return local if remote is None else remote
-    if local.startswith(remote):
-        return local
-    if remote.startswith(local):
-        return remote
-    raise FetchError(
-        f"{ledger} and origin/{branch}:release/index.jsonl diverge (neither is a prefix of the "
-        "other); the ledger only grows, so one of them was rewritten — repair it before bumping"
-    )
+        base = local if remote is None else remote
+    elif local.startswith(remote):
+        base = local
+    elif remote.startswith(local):
+        base = remote
+    else:
+        raise FetchError(
+            f"{ledger} and origin/{branch}:release/index.jsonl diverge (neither is a prefix of "
+            "the other); the ledger only grows, so one of them was rewritten — repair it before "
+            "bumping"
+        )
+    ahead = [(ref, text) for ref, text in _release_branch_ledgers(checkout)
+             if text.startswith(base or "") and text != (base or "")]
+    if not ahead:
+        return base
+    ahead.sort(key=lambda rt: len(rt[1]))
+    newest_ref, newest = ahead[-1]
+    for ref, text in ahead[:-1]:
+        if not newest.startswith(text):
+            raise FetchError(f"the ledgers on {ref} and {newest_ref} diverge; finish or delete "
+                             "one of those release branches before bumping")
+    return newest
 
 
 def bump(producer: str, cfg: Config, repo_root: Path) -> tuple[str, str, str]:
