@@ -22,6 +22,8 @@ TAG = "et-v0.9.3"
 ET_FILES = [
     "out/facts.json",
     "out/release.json",
+    "out/demos/**",  # each live editor: index.html, SOURCE.txt, document.docx, assets
+    "out/demo-files/*.docx",  # the sanitized copy the site links beside the demo
     "reports/*.md",
     "reports/*.docx",
     "?reports/figures/**",  # figures may be absent in a given release (M1)
@@ -31,6 +33,10 @@ TREE = {
     "out/facts.json": b'{"facts": 1}',
     "out/release.json": b'{"release": 1}',
     "out/other.json": b"not in the bundle",
+    "out/demos/superdoc/index.html": b"<html></html>",
+    "out/demos/superdoc/SOURCE.txt": b"Repository: https://example.test\nCommit: abcdef0\n",
+    "out/demo-files/superdoc.docx": b"PK\x03\x04demo",
+    "out/demo-files/notes.txt": b"not in the bundle",
     "reports/alpha.md": b"# alpha",
     "reports/bravo.md": b"# bravo",
     "reports/tool.docx": b"PK\x03\x04docx",
@@ -43,6 +49,9 @@ EXPECTED = sorted(
     [
         "out/facts.json",
         "out/release.json",
+        "out/demos/superdoc/index.html",
+        "out/demos/superdoc/SOURCE.txt",
+        "out/demo-files/superdoc.docx",
         "reports/alpha.md",
         "reports/bravo.md",
         "reports/tool.docx",

@@ -37,7 +37,7 @@ path = "/Users/arthrod/temp/T/editors_trial"
 [repos.release]           # plan 6 part A: the report bundle; benchmarks.law reads it at build time
 hf_repo = "arthrod/editors_trial-artifacts"
 private = true           # the trial documents are not for the public dataset (H2)
-files = ["out/facts.json", "out/release.json", "reports/*.md", "reports/*.docx", "?reports/figures/**"]  # figures may be absent in a given release (M1)
+files = ["out/facts.json", "out/release.json", "out/demos/**", "out/demo-files/*.docx", "reports/*.md", "reports/*.docx", "?reports/figures/**"]  # demos are the live bundles; figures may be absent (M1)
 
 [[repos]]
 name = "benchmarks-law"
